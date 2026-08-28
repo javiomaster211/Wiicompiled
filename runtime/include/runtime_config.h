@@ -49,6 +49,14 @@ struct RuntimeUserConfig {
     std::optional<bool> audioMuted;
     std::optional<bool> audioMixWorker;
     std::optional<bool> attenuateMusicWhenMediaPlays;
+    // Real Wii Remotes (with or without Nunchuk / Classic Controller) and Wii U Pro
+    // Controllers paired over Bluetooth, driven by SDL's HIDAPI Wii driver. The driver
+    // is opt-in on SDL's side, so this decides whether the runtime turns it on.
+    std::optional<bool> wiiRemotes;
+    // Keep re-enumerating Bluetooth HID devices while no Wii controller is connected
+    // (Dolphin's "continuous scanning"), so a remote that dropped or was switched on
+    // after launch shows up without restarting.
+    std::optional<bool> wiiContinuousScan;
     std::optional<bool> networkEnabled;
     std::optional<std::string> nandRoot;
     std::optional<std::string> dvdRoot;
@@ -328,6 +336,7 @@ inline void AppendOverlayRoots(RuntimeUserConfig& config, const std::string& roo
     }
 }
 
+// Reads every supported setting out of a parsed Config.toml document.
 inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     RuntimeUserConfig config;
 
@@ -399,6 +408,8 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     config.audioMixWorker = FindConfigValue<bool>(document, "audio", "mix_worker");
     config.attenuateMusicWhenMediaPlays =
         FindConfigValue<bool>(document, "audio", "attenuate_music_when_media_plays");
+    config.wiiRemotes = FindConfigValue<bool>(document, "controller", "wii_remotes");
+    config.wiiContinuousScan = FindConfigValue<bool>(document, "controller", "wii_continuous_scan");
     config.networkEnabled = FindConfigValue<bool>(document, "network", "enabled");
 
     config.nandRoot = FindConfigValue<std::string>(document, "paths", "nand_root");
@@ -729,14 +740,40 @@ inline bool AudioMixWorkerEnabled(bool fallback = true) {
     return Get().audioMixWorker.value_or(fallback);
 }
 
+// Whether background music should duck automatically for other media playback.
 inline bool AttenuateMusicWhenMediaPlays(bool fallback = false) {
     return Get().attenuateMusicWhenMediaPlays.value_or(fallback);
 }
 
+// Bluetooth Wii Remotes / Wii U Pro Controllers. Read once before SDL's joystick
+// subsystem comes up, so a change only takes effect on the next launch.
+inline bool WiiRemotesEnabled(bool fallback = true) {
+    return Get().wiiRemotes.value_or(fallback);
+}
+
+// Persists the Bluetooth Wii Remote driver switch.
+inline bool SetWiiRemotesEnabled(bool value) {
+    Mutable().wiiRemotes = value;
+    return WriteSetting("controller", "wii_remotes", value ? "true" : "false");
+}
+
+// Whether to keep rescanning Bluetooth while no Wii controller is connected.
+inline bool WiiContinuousScanEnabled(bool fallback = true) {
+    return Get().wiiContinuousScan.value_or(fallback);
+}
+
+// Persists the continuous scanning switch.
+inline bool SetWiiContinuousScanEnabled(bool value) {
+    Mutable().wiiContinuousScan = value;
+    return WriteSetting("controller", "wii_continuous_scan", value ? "true" : "false");
+}
+
+// Target frame rate for frame interpolation, or 0 to disable it.
 inline uint32_t FrameInterpolationFps(uint32_t fallback = 0) {
     return Get().frameInterpolationFps.value_or(fallback);
 }
 
+// Whether to skip draws whose graphics pipeline has not finished compiling yet.
 inline bool SkipUnreadyPipelines(bool fallback = true) {
     return Get().skipUnreadyPipelines.value_or(fallback);
 }

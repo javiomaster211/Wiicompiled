@@ -6,6 +6,7 @@
 #include "music_attenuation.h"
 #include "runtime_config.h"
 #include "runtime_log.h"
+#include "wii_remote_input.h"
 
 #include <imgui.h>
 #include <SDL3/SDL_events.h>
@@ -340,6 +341,50 @@ void DrawGameCubeAdapterInfo() {
     ImGui::EndMenu();
 }
 
+bool g_wiiRemotesEnabled = RuntimeConfigFile::WiiRemotesEnabled(true);
+bool g_wiiContinuousScan = RuntimeConfigFile::WiiContinuousScanEnabled(true);
+
+// Wii Remotes (Bluetooth) menu: driver switch, pairing help, continuous scanning and the port's controller kind.
+void DrawWiiRemoteSettings(uint32_t selectedGamePort) {
+    if (!ImGui::BeginMenu("Wii Remotes (Bluetooth)")) {
+        return;
+    }
+    if (ImGui::Checkbox("Use Wii Remotes / Wii U Pro Controllers", &g_wiiRemotesEnabled)) {
+        RuntimeConfigFile::SetWiiRemotesEnabled(g_wiiRemotesEnabled);
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Takes effect on the next launch. Turn this off if you use a Mayflash DolphinBar.");
+    }
+    ImGui::TextDisabled("Pairing: Windows Settings > Bluetooth > Add device, then press 1+2");
+    ImGui::TextDisabled("(or the red SYNC button) on the remote. Leave the PIN empty.");
+    ImGui::TextDisabled("A remote that was paired before also needs to be turned on with 1+2/SYNC.");
+    if (ImGui::Checkbox("Keep scanning for Wii Remotes (like Dolphin's Continuous Scanning)",
+                        &g_wiiContinuousScan)) {
+        RuntimeConfigFile::SetWiiContinuousScanEnabled(g_wiiContinuousScan);
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("While no Wii controller is connected, re-check Bluetooth every 2 seconds so a\n"
+                          "remote that dropped out (\"Communications with the controller have been\n"
+                          "interrupted\") or was turned on after launch comes back by itself.");
+    }
+    if (ImGui::Button("Rescan now")) {
+        WiiRemoteInput::RescanNow();
+    }
+    ImGui::SameLine();
+    if (WiiRemoteInput::IsScanning()) {
+        ImGui::TextDisabled("Scanning... (%u so far) - press 1+2 on the remote", WiiRemoteInput::ScanCount());
+    } else {
+        ImGui::TextDisabled("Not scanning");
+    }
+    ImGui::Separator();
+
+    const WiiRemoteInput::Kind kind = WiiRemoteInput::KindForPort(selectedGamePort);
+    ImGui::Text("Port %u: %s", static_cast<unsigned>(selectedGamePort + 1), WiiRemoteInput::KindLabel(kind));
+
+    ImGui::EndMenu();
+}
+
+// Controller settings menu: port selection, controller assignment and button mapping.
 void DrawControllerSettings() {
     for (int port = 0; port < PAD_MAX_CONTROLLERS; ++port) {
         const std::string label = "Port " + std::to_string(port + 1);
@@ -389,6 +434,7 @@ void DrawControllerSettings() {
     }
     ImGui::Separator();
     controller_mapping_wizard::DrawSetupList();
+    DrawWiiRemoteSettings(selectedGamePort);
     const uint32_t controllerCount = PADCount();
     if (controllerCount == 0) {
         ImGui::TextDisabled("No controller connected");

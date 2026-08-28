@@ -193,6 +193,28 @@ std::array<PADButtonMapping, PAD_BUTTON_COUNT> g_defaultButtonsJoyPair{{
     {SDL_GAMEPAD_BUTTON_DPAD_RIGHT, PAD_BUTTON_RIGHT},
 }};
 
+// Wii U Pro Controllers and Classic Controllers through SDL's HIDAPI Wii driver.
+// No SDL_GamepadType singles them out, so they are picked by the name the driver
+// gives them (see __PADSetDefaultMapping). Bare remotes and remote + Nunchuk are
+// read by the game through KPAD instead and never get a GameCube mapping.
+
+// Wii U Pro Controller and Classic Controller (Pro): Nintendo's labelled layout,
+// A on the right accelerates, B at the bottom brakes, ZL/ZR are analog triggers.
+std::array<PADButtonMapping, PAD_BUTTON_COUNT> g_defaultButtonsWiiClassic{{
+    {SDL_GAMEPAD_BUTTON_EAST, PAD_BUTTON_A},
+    {SDL_GAMEPAD_BUTTON_SOUTH, PAD_BUTTON_B},
+    {SDL_GAMEPAD_BUTTON_NORTH, PAD_BUTTON_X},
+    {SDL_GAMEPAD_BUTTON_WEST, PAD_BUTTON_Y},
+    {SDL_GAMEPAD_BUTTON_START, PAD_BUTTON_START},
+    {SDL_GAMEPAD_BUTTON_BACK, PAD_TRIGGER_Z},
+    {SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, PAD_TRIGGER_L},
+    {SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, PAD_TRIGGER_R},
+    {SDL_GAMEPAD_BUTTON_DPAD_UP, PAD_BUTTON_UP},
+    {SDL_GAMEPAD_BUTTON_DPAD_DOWN, PAD_BUTTON_DOWN},
+    {SDL_GAMEPAD_BUTTON_DPAD_LEFT, PAD_BUTTON_LEFT},
+    {SDL_GAMEPAD_BUTTON_DPAD_RIGHT, PAD_BUTTON_RIGHT},
+}};
+
 std::array<PADKeyButtonBinding, PAD_BUTTON_COUNT> g_defaultKeys{{
     {PAD_KEY_INVALID, PAD_BUTTON_A},
     {PAD_KEY_INVALID, PAD_BUTTON_B},
@@ -409,8 +431,30 @@ static void reset_alt_button_mapping(aurora::input::GameController* controller) 
   }
 }
 
+// SDL's hidapi Wii driver names its gamepads "Nintendo Wii Remote with Classic
+// Controller" and "Nintendo Wii U Pro Controller" (the extension is part of the
+// name because the driver re-registers the gamepad when one is plugged in).
+static bool wii_default_mapping(const aurora::input::GameController* controller,
+                                std::array<PADButtonMapping, PAD_BUTTON_COUNT>& out) {
+  const char* name = SDL_GetGamepadName(controller->m_controller);
+  if (name == nullptr) {
+    return false;
+  }
+  if (SDL_strstr(name, "Wii U Pro Controller") == nullptr &&
+      (SDL_strstr(name, "Wii Remote") == nullptr || SDL_strstr(name, "Classic Controller") == nullptr)) {
+    return false;
+  }
+  out = g_defaultButtonsWiiClassic;
+  return true;
+}
+
+// Picks the default button table for a controller by name (Wii pads) or SDL gamepad type.
 void __PADSetDefaultMapping(aurora::input::GameController* controller) /*  NOLINT(*-reserved-identifier) */
 {
+  if (wii_default_mapping(controller, controller->m_buttonMapping)) {
+    reset_alt_button_mapping(controller);
+    return;
+  }
   switch (SDL_GetGamepadType(controller->m_controller)) {
   case SDL_GAMEPAD_TYPE_XBOX360:
     controller->m_buttonMapping = g_defaultButtonsXBox360;

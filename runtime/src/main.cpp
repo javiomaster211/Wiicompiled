@@ -48,6 +48,7 @@
 #include "ppc_runtime.h"
 #include "aurora_events.h"
 #include "wup028_adapter.h"
+#include "wii_remote_input.h"
 #include "fiber_manager.h"
 #include "hle_stubs.h"
 #include "runtime_config.h"
@@ -1166,6 +1167,7 @@ static void TerminateHandler() {
     std::_Exit(EXIT_FAILURE);
 }
 
+// Runtime entry point: loads the configuration, brings up aurora and runs the game.
 int RuntimeMain(int argc, char** argv) {
     // Must run before the transcript duplicates stdout/stderr: it decides what
     // those descriptors are mirrored to now that the products are GUI-subsystem.
@@ -1259,6 +1261,11 @@ int RuntimeMain(int argc, char** argv) {
             }
         }
         const AuroraBackend requestedBackend = auroraConfig.desiredBackend;
+
+        // SDL only reads its Wii driver hint when the joystick subsystem starts, which
+        // aurora_initialize does; a Bluetooth Wii Remote paired before launch must be
+        // visible on that first scan.
+        WiiRemoteInput::ConfigureSdlHints(RuntimeConfigFile::WiiRemotesEnabled(true));
 
         const AuroraInfo auroraInfo = aurora_initialize(0, nullptr, &auroraConfig);
         if (requestedBackend != BACKEND_AUTO && auroraInfo.backend != requestedBackend) {

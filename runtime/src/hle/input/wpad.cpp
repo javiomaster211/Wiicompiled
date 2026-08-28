@@ -1,6 +1,7 @@
 #include "hle_stubs.h"
 #include "memory.h"
 #include "hle/controller_status_contract.h"
+#include "wii_remote_input.h"
 
 #include <cstdint>
 
@@ -98,18 +99,31 @@ extern "C" int32_t WPADGetDataFormat_HLE(uint32_t chan)
 }
 PPC_NATIVE_OVERRIDE(801C0B54, WPADGetDataFormat_HLE, int32_t, (uint32_t chan), (chan));
 
+// WPADSetDataFormat: records the per-channel data format the game asked for.
 extern "C" int32_t WPADSetDataFormat_HLE(uint32_t chan, int32_t format)
 {
     return g_state.contract.SetDataFormat(chan, format);
 }
 PPC_NATIVE_OVERRIDE(801C0B9C, WPADSetDataFormat_HLE, int32_t, (uint32_t chan, int32_t format), (chan, format));
 
+// WPADProbe: reports the extension type of a Bluetooth remote on `chan`, or no controller.
 extern "C" int32_t WPADProbe_HLE(uint32_t chan, uint32_t typePtr)
 {
     if (chan >= WpadContract::kChannelCount) {
         return WpadContract::kErrorBadChannel;
     }
 
+    // A real Bluetooth remote: WPAD_DEV_CORE (0) for a bare
+    // remote, WPAD_DEV_FREESTYLE (1) with a Nunchuk. The game reads the type
+    // from here (not from KPADStatus.dev_type) to pick its control scheme.
+    if (WiiRemoteInput::IsRemoteChannel(chan)) {
+        if (typePtr != 0) {
+            Memory::Write32(typePtr, WiiRemoteInput::KindForPort(chan) == WiiRemoteInput::Kind::RemoteWithNunchuk
+                                         ? 1u
+                                         : WpadContract::kExtensionCore);
+        }
+        return kStatusOk;
+    }
     if (typePtr != 0) {
         Memory::Write32(typePtr, WpadContract::kExtensionCore);
     }

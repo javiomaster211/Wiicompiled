@@ -2,6 +2,7 @@
 #include "memory.h"
 #include "hle/controller_status_contract.h"
 #include "wup028_adapter.h"
+#include "wii_remote_input.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -39,6 +40,7 @@ extern "C" uint32_t PAD__Init_HLE()
 }
 PPC_NATIVE_OVERRIDE(801AF2F0, PAD__Init_HLE, uint32_t, (), ());
 
+// PADRead: gathers every GameCube pad source for the frame and writes the statuses to guest memory.
 extern "C" uint32_t PAD__Read_HLE(uint32_t statusPtr)
 {
     if (statusPtr == 0) {
@@ -47,7 +49,13 @@ extern "C" uint32_t PAD__Read_HLE(uint32_t statusPtr)
 
     PADStatus statuses[PAD_CHANMAX]{};
     std::array<PADStatus, PAD_CHANMAX> adapterStatuses{};
+    // Keep looking for a Bluetooth Wii Remote that dropped out (or was turned on late).
+    WiiRemoteInput::Poll();
     uint32_t rumbleMask = PADRead(statuses);
+    if (!PADIsInputBlocked()) {
+        // Wii Remotes reach the game through KPAD, not as GameCube pads.
+        WiiRemoteInput::HideRemotesFromPad(statuses, PAD_CHANMAX);
+    }
     if (Wup028Adapter::Read(adapterStatuses) && !PADIsInputBlocked()) {
         for (uint32_t port = 0; port < PAD_CHANMAX; ++port) {
             if (adapterStatuses[port].err == PAD_ERR_NONE) {
