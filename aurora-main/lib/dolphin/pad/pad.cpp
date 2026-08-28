@@ -199,7 +199,10 @@ std::array<PADButtonMapping, PAD_BUTTON_COUNT> g_defaultButtonsJoyPair{{
 // read by the game through KPAD instead and never get a GameCube mapping.
 
 // Wii U Pro Controller and Classic Controller (Pro): Nintendo's labelled layout,
-// A on the right accelerates, B at the bottom brakes, ZL/ZR are analog triggers.
+// A on the right accelerates, B at the bottom brakes. SDL's Wii driver reports
+// ZL/ZR as the LEFT_TRIGGER/RIGHT_TRIGGER axes, never as shoulder buttons, so
+// they are left unbound here and picked up by aurora's default axis mapping
+// (g_defaultAxes) the same way every analog-trigger pad's L/R is.
 std::array<PADButtonMapping, PAD_BUTTON_COUNT> g_defaultButtonsWiiClassic{{
     {SDL_GAMEPAD_BUTTON_EAST, PAD_BUTTON_A},
     {SDL_GAMEPAD_BUTTON_SOUTH, PAD_BUTTON_B},
@@ -207,8 +210,8 @@ std::array<PADButtonMapping, PAD_BUTTON_COUNT> g_defaultButtonsWiiClassic{{
     {SDL_GAMEPAD_BUTTON_WEST, PAD_BUTTON_Y},
     {SDL_GAMEPAD_BUTTON_START, PAD_BUTTON_START},
     {SDL_GAMEPAD_BUTTON_BACK, PAD_TRIGGER_Z},
-    {SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, PAD_TRIGGER_L},
-    {SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, PAD_TRIGGER_R},
+    {PAD_NATIVE_BUTTON_INVALID, PAD_TRIGGER_L},
+    {PAD_NATIVE_BUTTON_INVALID, PAD_TRIGGER_R},
     {SDL_GAMEPAD_BUTTON_DPAD_UP, PAD_BUTTON_UP},
     {SDL_GAMEPAD_BUTTON_DPAD_DOWN, PAD_BUTTON_DOWN},
     {SDL_GAMEPAD_BUTTON_DPAD_LEFT, PAD_BUTTON_LEFT},
