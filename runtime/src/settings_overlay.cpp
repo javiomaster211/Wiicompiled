@@ -380,6 +380,20 @@ void DrawWiiRemoteSettings(uint32_t selectedGamePort) {
 
     const WiiRemoteInput::Kind kind = WiiRemoteInput::KindForPort(selectedGamePort);
     ImGui::Text("Port %u: %s", static_cast<unsigned>(selectedGamePort + 1), WiiRemoteInput::KindLabel(kind));
+    if (kind == WiiRemoteInput::Kind::RemoteWithClassic || kind == WiiRemoteInput::Kind::WiiUPro) {
+        if (SDL_Gamepad* gamepad = SDL_GetGamepadFromPlayerIndex(static_cast<int>(selectedGamePort))) {
+            ImGui::Text("Raw D-pad: %s %s %s %s",
+                        SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_DPAD_UP) ? "UP" : "up",
+                        SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_DPAD_DOWN) ? "DOWN" : "down",
+                        SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_DPAD_LEFT) ? "LEFT" : "left",
+                        SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_DPAD_RIGHT) ? "RIGHT" : "right");
+            ImGui::Text("Raw ZL/ZR: %d / %d (pressed above 0)",
+                        SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER),
+                        SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER));
+            ImGui::TextDisabled("Capitals = held. If D-pad Up never turns to UP while physically held,");
+            ImGui::TextDisabled("that press is not reaching SDL at all (a driver-level issue, not a mapping one).");
+        }
+    }
 
     ImGui::EndMenu();
 }
