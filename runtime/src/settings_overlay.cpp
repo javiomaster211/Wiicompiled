@@ -337,9 +337,13 @@ void DrawWiiRemoteSettings(uint32_t selectedGamePort) {
                           "remote that dropped out (\"Communications with the controller have been\n"
                           "interrupted\") or was turned on after launch comes back by itself.");
     }
+    // The driver hint is only read at launch, so a rescan after the user turned
+    // the setting off would still re-enumerate Wii devices in this session.
+    ImGui::BeginDisabled(!g_wiiRemotesEnabled);
     if (ImGui::Button("Rescan now")) {
         WiiRemoteInput::RescanNow();
     }
+    ImGui::EndDisabled();
     ImGui::SameLine();
     if (WiiRemoteInput::IsScanning()) {
         ImGui::TextDisabled("Scanning... (%u so far) - press 1+2 on the remote", WiiRemoteInput::ScanCount());

@@ -113,6 +113,10 @@ extern "C" int32_t WPADProbe_HLE(uint32_t chan, uint32_t typePtr)
         return WpadContract::kErrorBadChannel;
     }
 
+    // Drive the rescan state machine here too: a reconnect probe can arrive
+    // before the next PADRead, and only Poll() brings a dropped remote back.
+    WiiRemoteInput::Poll();
+
     // A real Bluetooth remote: WPAD_DEV_CORE (0) for a bare
     // remote, WPAD_DEV_FREESTYLE (1) with a Nunchuk. The game reads the type
     // from here (not from KPADStatus.dev_type) to pick its control scheme.

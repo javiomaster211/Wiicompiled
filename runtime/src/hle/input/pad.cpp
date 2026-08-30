@@ -49,10 +49,10 @@ extern "C" uint32_t PAD__Read_HLE(uint32_t statusPtr)
     // Keep looking for a Bluetooth Wii Remote that dropped out (or was turned on late).
     WiiRemoteInput::Poll();
     uint32_t rumbleMask = PADRead(statuses);
-    if (!PADIsInputBlocked()) {
-        // Wii Remotes reach the game through KPAD, not as GameCube pads.
-        WiiRemoteInput::HideRemotesFromPad(statuses, PAD_CHANMAX);
-    }
+    // Wii Remotes reach the game through KPAD, not as GameCube pads. This also
+    // applies while input is blocked (overlay open) so the port does not flip
+    // between "connected" and "no controller" every time the overlay toggles.
+    WiiRemoteInput::HideRemotesFromPad(statuses, PAD_CHANMAX);
 
     try {
         for (uint32_t i = 0; i < PAD_CHANMAX; ++i) {

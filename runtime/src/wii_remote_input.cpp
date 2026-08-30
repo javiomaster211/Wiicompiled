@@ -78,13 +78,19 @@ void EnsureSensors(SDL_Gamepad* gamepad, uint32_t port) {
     if (g_sensorsEnabledFor[port] == id) {
         return;
     }
+    bool allEnabled = true;
     for (SDL_SensorType sensor : {SDL_SENSOR_ACCEL, SDL_SENSOR_ACCEL_L}) {
         if (SDL_GamepadHasSensor(gamepad, sensor) && !SDL_SetGamepadSensorEnabled(gamepad, sensor, true)) {
             RT_LOG(RT_TAG_CONFIG) << "Wii Remote on port " << (port + 1)
                                   << ": could not enable an accelerometer: " << SDL_GetError() << std::endl;
+            allEnabled = false;
         }
     }
-    g_sensorsEnabledFor[port] = id;
+    // Only remember the instance once every sensor is on, so a failed attempt
+    // is retried on the next sample instead of leaving the accelerometer off.
+    if (allEnabled) {
+        g_sensorsEnabledFor[port] = id;
+    }
 }
 
 // SDL reports (-wiiX, wiiZ, wiiY) in m/s^2: right across the face, out of the
@@ -144,6 +150,9 @@ void FinishRescan(uint64_t now) {
 
 // Enables SDL's HIDAPI Wii driver and player LEDs, and routes SDL's input log.
 void ConfigureSdlHints(bool enabled) {
+    // A rescan may be mid-flight; drop its bookkeeping so Poll() is not left
+    // waiting for a FinishRescan() that can no longer happen.
+    g_driverOffSinceMs = 0;
     if (!SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_WII, enabled ? "1" : "0")) {
         RT_LOG(RT_TAG_CONFIG) << "Failed to set " << SDL_HINT_JOYSTICK_HIDAPI_WII << ": " << SDL_GetError()
                               << std::endl;
