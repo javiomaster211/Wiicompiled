@@ -4,6 +4,7 @@
 #include <dolphin/pad.h>
 #include <dolphin/si.h>
 #include <SDL3/SDL_mouse.h>
+#include <SDL3/SDL_joystick.h>
 
 #include <array>
 #include <atomic>
@@ -792,6 +793,48 @@ u32 PADRead(PADStatus* status) {
 
     if (controller) {
       EnsureMappingLoaded(controller);
+
+      // Wii Remote + Classic Controller raw D-pad fallback.
+      // Keep this restricted to Wii Classic Controllers so raw button
+      // indices don't interfere with other controller types.
+      const char* name = SDL_GetGamepadName(controller->m_controller);
+      const bool isWiiClassic =
+          name != nullptr &&
+          SDL_strstr(name, "Wii Remote") != nullptr &&
+          SDL_strstr(name, "Classic Controller") != nullptr;
+
+      if (isWiiClassic) {
+        SDL_Joystick* joystick =
+            SDL_GetGamepadJoystick(controller->m_controller);
+
+        uint32_t raw = 0;
+        const int buttonCount = SDL_GetNumJoystickButtons(joystick);
+
+        for (int b = 0; b < buttonCount && b < 32; ++b) {
+          if (SDL_GetJoystickButton(joystick, b)) {
+            raw |= (1u << b);
+          }
+        }
+
+        // Classic Controller / Classic Controller Pro raw D-pad fallback.
+        // Up    = button 11
+        if (raw & (1u << 11)) {
+          status[i].button |= PAD_BUTTON_UP;
+        }
+        // Down  = button 12
+        if (raw & (1u << 12)) {
+          status[i].button |= PAD_BUTTON_DOWN;
+        }
+        // Left  = button 13
+        if (raw & (1u << 13)) {
+          status[i].button |= PAD_BUTTON_LEFT;
+        }
+        // Right = button 14
+        if (raw & (1u << 14)) {
+          status[i].button |= PAD_BUTTON_RIGHT;
+        }
+      }
+
       bool leftTriggerSet = false;
       bool rightTriggerSet = false;
       std::ranges::for_each(controller->m_buttonMapping, [&controller, &i, &status, &leftTriggerSet,
@@ -824,6 +867,7 @@ u32 PADRead(PADStatus* status) {
           rightTriggerSet = true;
         }
       });
+
 
       // TODO: Add serializable mappings for these (probably not necessary)?
       static constexpr std::array<std::pair<SDL_GamepadButton, PADExtButton>, PAD_EXT_BUTTON_COUNT> kExtButtonMappings{{
