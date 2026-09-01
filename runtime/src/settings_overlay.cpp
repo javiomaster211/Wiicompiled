@@ -1040,8 +1040,9 @@ void Draw() noexcept {
     // and started the next ImGui frame, so all overlay callers can now safely issue ImGui commands.
     aurora_wait_for_frame_worker();
     // Also drive the Wii Remote rescan from here: PADRead runs it too, but this
-    // runs once per presented frame on the thread that pumps SDL, whatever the
-    // game is doing (e.g. sitting in its "communications interrupted" prompt).
+    // runs once per presented frame whatever the game is doing (e.g. sitting in
+    // its "communications interrupted" prompt without polling pads). Same guest
+    // thread as PADRead, so no concurrent access to the scanner's state.
     WiiRemoteInput::Poll();
     ApplyConfiguredMappings();
     PersistDisplayModeIfChanged();

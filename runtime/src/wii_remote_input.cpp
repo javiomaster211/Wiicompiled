@@ -507,20 +507,28 @@ const char* KindLabel(Kind kind) {
 }
 
 // True for the kinds the game reads through KPAD.
-bool IsKpadKind(Kind kind) {
+static bool IsKpadKind(Kind kind) {
     return kind == Kind::Remote || kind == Kind::RemoteWithNunchuk || kind == Kind::RemoteWithClassic;
 }
 
 // Live kind of the port, or the remembered one while a swap is in flight.
+// Called from the guest thread only (PADRead, KPADRead, WPADProbe and the
+// overlay's Draw all run there), so the port memory needs no locking.
 Kind EffectiveKind(uint32_t chan) {
     if (chan >= PAD_MAX_CONTROLLERS) return Kind::NotWii;
     PortMemory& memory = g_ports[chan];
-    const Kind live = KindForPort(chan);
+    SDL_Gamepad* gamepad = SDL_GetGamepadFromPlayerIndex(static_cast<int>(chan));
+    const Kind live = gamepad != nullptr ? KindForName(SDL_GetGamepadName(gamepad)) : Kind::NotWii;
     const uint64_t now = SDL_GetTicks();
     if (live != Kind::NotWii) {
         memory.lastKind = live;
         memory.lastSeenMs = now;
         return live;
+    }
+    if (gamepad != nullptr) {
+        // Another controller took the port: the remote is not coming back here.
+        memory.lastKind = Kind::NotWii;
+        return Kind::NotWii;
     }
     if (IsKpadKind(memory.lastKind) && memory.lastSeenMs != 0 && now - memory.lastSeenMs < kExtensionSwapGraceMs) {
         return memory.lastKind;
@@ -715,14 +723,17 @@ void ClearAccelCalibration() {
     std::snprintf(g_calibrationMessage, sizeof(g_calibrationMessage), "Calibration cleared.");
 }
 
+// True while a calibration run is collecting samples.
 bool IsAccelCalibrating() {
     return g_calibration.active;
 }
 
+// Share of the calibration samples collected so far, 0..1; 0 when idle.
 float AccelCalibrationProgress() {
     return g_calibration.active ? static_cast<float>(g_calibration.count) / kCalibrationSamples : 0.0f;
 }
 
+// Outcome of the last calibration run for the overlay, or nullptr before any.
 const char* AccelCalibrationMessage() {
     return g_calibrationMessage[0] != '\0' ? g_calibrationMessage : nullptr;
 }
