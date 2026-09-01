@@ -194,16 +194,19 @@ std::array<PADButtonMapping, PAD_BUTTON_COUNT> g_defaultButtonsJoyPair{{
     {SDL_GAMEPAD_BUTTON_DPAD_RIGHT, PAD_BUTTON_RIGHT},
 }};
 
-// Wii U Pro Controllers and Classic Controllers through SDL's HIDAPI Wii driver.
-// No SDL_GamepadType singles them out, so they are picked by the name the driver
-// gives them (see __PADSetDefaultMapping). Bare remotes and remote + Nunchuk are
-// read by the game through KPAD instead and never get a GameCube mapping.
+// Wii U Pro Controllers through SDL's HIDAPI Wii driver. No SDL_GamepadType
+// singles them out, so they are picked by the name the driver gives them (see
+// __PADSetDefaultMapping). Wii Remotes, with or without a Nunchuk or Classic
+// Controller, are read by the game through KPAD instead and never get a
+// GameCube mapping (the runtime hides those ports from PADRead); the Classic
+// Controller name is still matched here only so a build without that KPAD path
+// gets a sensible default.
 
-// Wii U Pro Controller and Classic Controller (Pro): Nintendo's labelled layout,
-// A on the right accelerates, B at the bottom brakes. SDL's Wii driver reports
-// ZL/ZR as the LEFT_TRIGGER/RIGHT_TRIGGER axes, never as shoulder buttons, so
-// they are left unbound here and picked up by aurora's default axis mapping
-// (g_defaultAxes) the same way every analog-trigger pad's L/R is.
+// Nintendo's labelled layout: A on the right accelerates, B at the bottom
+// brakes. SDL's Wii driver reports ZL/ZR as the LEFT_TRIGGER/RIGHT_TRIGGER
+// axes, never as shoulder buttons, so they are left unbound here and picked up
+// by aurora's default axis mapping (g_defaultAxes) the same way every
+// analog-trigger pad's L/R is.
 std::array<PADButtonMapping, PAD_BUTTON_COUNT> g_defaultButtonsWiiClassic{{
     {SDL_GAMEPAD_BUTTON_EAST, PAD_BUTTON_A},
     {SDL_GAMEPAD_BUTTON_SOUTH, PAD_BUTTON_B},
@@ -794,14 +797,18 @@ u32 PADRead(PADStatus* status) {
     if (controller) {
       EnsureMappingLoaded(controller);
 
-      // Wii Remote + Classic Controller raw D-pad fallback.
-      // Keep this restricted to Wii Classic Controllers so raw button
-      // indices don't interfere with other controller types.
+      // Wii Classic Controller / Wii U Pro Controller raw D-pad fallback.
+      // SDL's HIDAPI Wii driver posts the D-pad as joystick buttons 11-14 (the
+      // SDL_GAMEPAD_BUTTON_DPAD_* values) and never as a hat, but the mapping
+      // SDL generates for HIDAPI pads binds the D-pad to hat 0, so
+      // SDL_GetGamepadButton(DPAD_*) stays false. Keep this restricted to the
+      // Wii driver's pads so raw button indices don't interfere with other
+      // controller types.
       const char* name = SDL_GetGamepadName(controller->m_controller);
       const bool isWiiClassic =
           name != nullptr &&
-          SDL_strstr(name, "Wii Remote") != nullptr &&
-          SDL_strstr(name, "Classic Controller") != nullptr;
+          ((SDL_strstr(name, "Wii Remote") != nullptr && SDL_strstr(name, "Classic Controller") != nullptr) ||
+           SDL_strstr(name, "Wii U Pro Controller") != nullptr);
 
       if (isWiiClassic) {
         SDL_Joystick* joystick =

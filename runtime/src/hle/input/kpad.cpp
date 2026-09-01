@@ -2,12 +2,15 @@
 #include "memory.h"
 #include "wii_remote_input.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
 
 // KPAD HLE fed by a real Bluetooth Wii Remote. The game calls KPADRead once per
-// frame with room for 16 KPADStatus entries and only looks at entry 0.
+// frame with room for 16 KPADStatus entries and only looks at entry 0; with a
+// Classic Controller it also calls KPADGetUnifiedWpadStatus for the raw
+// WPADCLStatus (buttons, sticks and triggers of the extension).
 namespace {
 
 constexpr uint32_t kKpadStatusSize = 0x84;
@@ -17,16 +20,36 @@ constexpr uint32_t kHold = 0x00, kTrig = 0x04, kRelease = 0x08, kAcc = 0x0C, kAc
                    kAccSpeed = 0x1C, kPos = 0x20, kAccVertical = 0x54, kDevType = 0x5C, kWpadErr = 0x5D,
                    kDpdValidFg = 0x5E, kDataFormat = 0x5F, kFsStick = 0x60, kFsAcc = 0x68, kFsAccValue = 0x74,
                    kFsAccSpeed = 0x78;
+// KPADStatus.ex_status.cl (KPADEXStatus, Classic Controller view).
+constexpr uint32_t kClHold = 0x60, kClTrig = 0x64, kClRelease = 0x68, kClLStick = 0x6C, kClRStick = 0x74,
+                   kClLTrigger = 0x7C, kClRTrigger = 0x80;
 
+// KPADUnifiedWpadStatus: WPADStatus / WPADFSStatus / WPADCLStatus union, then fmt.
+constexpr uint32_t kUnifiedSize = 0x38;
+constexpr uint32_t kUButton = 0x00, kUAccX = 0x02, kUAccY = 0x04, kUAccZ = 0x06, kUObj = 0x08, kUDev = 0x28,
+                   kUErr = 0x29, kUFsStickX = 0x2A, kUFsStickY = 0x2B, kUFsAccX = 0x2C, kUFsAccY = 0x2E,
+                   kUFsAccZ = 0x30, kUClButton = 0x2A, kUClLStickX = 0x2C, kUClLStickY = 0x2E, kUClRStickX = 0x30,
+                   kUClRStickY = 0x32, kUClTriggerL = 0x34, kUClTriggerR = 0x35, kUFmt = 0x36;
+
+// WPAD device types (WPAD_DEV_*) and the data formats KPAD runs each of them
+// in (WPAD_FMT_*_ACC_DPD): the values KPADStatus.dev_type / data_format and
+// KPADUnifiedWpadStatus.dev / fmt carry on the console.
 constexpr uint8_t kDevCore = 0;
 constexpr uint8_t kDevFreestyle = 1;
-constexpr uint8_t kFmtCoreAcc = 1;
-constexpr uint8_t kFmtFreestyleAcc = 2;
+constexpr uint8_t kDevClassic = 2;
+constexpr uint8_t kFmtCoreAccDpd = 2;
+constexpr uint8_t kFmtFreestyleAccDpd = 5;
+constexpr uint8_t kFmtClassicAccDpd = 8;
 constexpr int8_t kWpadErrNone = 0;
 constexpr int8_t kWpadErrNoController = -1;
 
+// Raw accelerometer as WPADStatus carries it: 10 bits, 0x200 at 0 g, 100 per g.
+constexpr float kRawAccZero = 512.0f;
+constexpr float kRawAccPerG = 100.0f;
+
 struct ChannelState {
     uint32_t prevHold = 0;
+    uint32_t prevClHold = 0;
     float prevAcc[3] = {0.0f, -1.0f, 0.0f};
     float prevFsAcc[3] = {0.0f, -1.0f, 0.0f};
 };
@@ -89,11 +112,27 @@ int32_t WriteStatus(uint32_t chan, uint32_t addr, const WiiRemoteInput::KpadSamp
     WriteZeroFloats(addr + kPos, (kAccVertical + 8 - kPos) / 4);
     Memory::Write8(addr + kDpdValidFg, 0);
 
-    Memory::Write8(addr + kDevType, sample->hasNunchuk ? kDevFreestyle : kDevCore);
+    const uint8_t devType = sample->hasClassic ? kDevClassic : sample->hasNunchuk ? kDevFreestyle : kDevCore;
+    const uint8_t dataFormat =
+        sample->hasClassic ? kFmtClassicAccDpd : sample->hasNunchuk ? kFmtFreestyleAccDpd : kFmtCoreAccDpd;
+    Memory::Write8(addr + kDevType, devType);
     Memory::Write8(addr + kWpadErr, static_cast<uint8_t>(kWpadErrNone));
-    Memory::Write8(addr + kDataFormat, sample->hasNunchuk ? kFmtFreestyleAcc : kFmtCoreAcc);
+    Memory::Write8(addr + kDataFormat, dataFormat);
 
-    if (sample->hasNunchuk) {
+    if (sample->hasClassic) {
+        const uint32_t clHold = sample->clHold;
+        Memory::Write32(addr + kClHold, clHold);
+        Memory::Write32(addr + kClTrig, clHold & ~state.prevClHold);
+        Memory::Write32(addr + kClRelease, state.prevClHold & ~clHold);
+        state.prevClHold = clHold;
+        Memory::WriteFloat32(addr + kClLStick, sample->clLStick[0]);
+        Memory::WriteFloat32(addr + kClLStick + 4, sample->clLStick[1]);
+        Memory::WriteFloat32(addr + kClRStick, sample->clRStick[0]);
+        Memory::WriteFloat32(addr + kClRStick + 4, sample->clRStick[1]);
+        Memory::WriteFloat32(addr + kClLTrigger, sample->clTriggerL / 255.0f);
+        Memory::WriteFloat32(addr + kClRTrigger, sample->clTriggerR / 255.0f);
+    } else if (sample->hasNunchuk) {
+        state.prevClHold = 0;
         Memory::WriteFloat32(addr + kFsStick, sample->stick[0]);
         Memory::WriteFloat32(addr + kFsStick + 4, sample->stick[1]);
         WriteVec3(addr + kFsAcc, sample->nunchukAcc);
@@ -101,9 +140,67 @@ int32_t WriteStatus(uint32_t chan, uint32_t addr, const WiiRemoteInput::KpadSamp
         Memory::WriteFloat32(addr + kFsAccSpeed, Distance(sample->nunchukAcc, state.prevFsAcc));
         for (int i = 0; i < 3; ++i) state.prevFsAcc[i] = sample->nunchukAcc[i];
     } else {
+        state.prevClHold = 0;
         WriteZeroFloats(addr + kFsStick, (kKpadStatusSize - kFsStick) / 4);
     }
     return 1;
+}
+
+// One accelerometer axis of KPAD's g vector back to the 10-bit raw WPAD value.
+uint16_t RawAcc(float g) {
+    const float raw = kRawAccZero + g * kRawAccPerG;
+    return static_cast<uint16_t>(std::clamp(raw, 0.0f, 1023.0f));
+}
+
+// Fills one KPADUnifiedWpadStatus at `addr` from the sample: the WPADStatus core
+// (remote buttons, raw accelerometer, no IR objects), then the Nunchuk or Classic
+// Controller tail, then the data format.
+void WriteUnifiedStatus(uint32_t addr, const WiiRemoteInput::KpadSample* sample) {
+    for (uint32_t offset = 0; offset < kUnifiedSize; offset += 4) {
+        Memory::Write32(addr + offset, 0);
+    }
+    if (sample == nullptr) {
+        Memory::Write8(addr + kUDev, kDevCore);
+        Memory::Write8(addr + kUErr, static_cast<uint8_t>(kWpadErrNoController));
+        Memory::Write8(addr + kUFmt, kFmtCoreAccDpd);
+        return;
+    }
+    Memory::Write16(addr + kUButton, static_cast<uint16_t>(sample->hold & 0xFFFF));
+    // KPAD's acc is (-wiiX, -wiiZ, wiiY); WPADStatus keeps the remote's own axes.
+    Memory::Write16(addr + kUAccX, RawAcc(-sample->acc[0]));
+    Memory::Write16(addr + kUAccY, RawAcc(sample->acc[2]));
+    Memory::Write16(addr + kUAccZ, RawAcc(-sample->acc[1]));
+    // No IR: every DPDObject invalid (x/y at the sensor's out-of-range value).
+    for (uint32_t i = 0; i < 4; ++i) {
+        Memory::Write16(addr + kUObj + i * 8, 0x3FF);
+        Memory::Write16(addr + kUObj + i * 8 + 2, 0x3FF);
+    }
+    Memory::Write8(addr + kUErr, static_cast<uint8_t>(kWpadErrNone));
+    if (sample->hasClassic) {
+        Memory::Write8(addr + kUDev, kDevClassic);
+        Memory::Write16(addr + kUClButton, static_cast<uint16_t>(sample->clHold & 0xFFFF));
+        Memory::Write16(addr + kUClLStickX, static_cast<uint16_t>(sample->clLStickRaw[0]));
+        Memory::Write16(addr + kUClLStickY, static_cast<uint16_t>(sample->clLStickRaw[1]));
+        Memory::Write16(addr + kUClRStickX, static_cast<uint16_t>(sample->clRStickRaw[0]));
+        Memory::Write16(addr + kUClRStickY, static_cast<uint16_t>(sample->clRStickRaw[1]));
+        Memory::Write8(addr + kUClTriggerL, sample->clTriggerL);
+        Memory::Write8(addr + kUClTriggerR, sample->clTriggerR);
+        Memory::Write8(addr + kUFmt, kFmtClassicAccDpd);
+    } else if (sample->hasNunchuk) {
+        Memory::Write8(addr + kUDev, kDevFreestyle);
+        // WPADFSStatus: 8-bit stick (centre 128) and 10-bit Nunchuk accelerometer.
+        Memory::Write8(addr + kUFsStickX,
+                       static_cast<uint8_t>(std::clamp(128.0f + sample->stick[0] * 100.0f, 0.0f, 255.0f)));
+        Memory::Write8(addr + kUFsStickY,
+                       static_cast<uint8_t>(std::clamp(128.0f + sample->stick[1] * 100.0f, 0.0f, 255.0f)));
+        Memory::Write16(addr + kUFsAccX, RawAcc(-sample->nunchukAcc[0]));
+        Memory::Write16(addr + kUFsAccY, RawAcc(sample->nunchukAcc[2]));
+        Memory::Write16(addr + kUFsAccZ, RawAcc(-sample->nunchukAcc[1]));
+        Memory::Write8(addr + kUFmt, kFmtFreestyleAccDpd);
+    } else {
+        Memory::Write8(addr + kUDev, kDevCore);
+        Memory::Write8(addr + kUFmt, kFmtCoreAccDpd);
+    }
 }
 
 } // namespace
@@ -125,15 +222,21 @@ extern "C" int32_t KPAD__Read_HLE(uint32_t chan, uint32_t statusPtr, uint32_t co
 PPC_NATIVE_OVERRIDE(80197380, KPAD__Read_HLE, int32_t, (uint32_t chan, uint32_t statusPtr, uint32_t count),
          (chan, statusPtr, count));
 
-// KPADGetUnifiedWpadStatus: not served; Classic Controllers use the GameCube pad path.
+// KPADGetUnifiedWpadStatus: the raw WPAD status behind KPADStatus[0]. The game
+// reads the Classic Controller's buttons, sticks and triggers from here.
 extern "C" int32_t KPAD__GetUnifiedWpadStatus_HLE(uint32_t chan, uint32_t statusPtr, uint32_t count)
 {
-    // Only used by the game for Classic Controllers, which still go through the
-    // GameCube pad path.
-    (void)chan;
-    (void)statusPtr;
-    (void)count;
-    return 0;
+    if (chan >= g_channels.size() || statusPtr == 0 || count == 0) {
+        return 0;
+    }
+    WiiRemoteInput::KpadSample sample;
+    const bool have = WiiRemoteInput::ReadKpadSample(chan, sample);
+    try {
+        WriteUnifiedStatus(statusPtr, have ? &sample : nullptr);
+    } catch (const Memory::AccessViolation&) {
+        return 0;
+    }
+    return have ? 1 : 0;
 }
 PPC_NATIVE_OVERRIDE(8019812C, KPAD__GetUnifiedWpadStatus_HLE, int32_t,
          (uint32_t chan, uint32_t statusPtr, uint32_t count), (chan, statusPtr, count));

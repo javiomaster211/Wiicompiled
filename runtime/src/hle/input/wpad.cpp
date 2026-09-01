@@ -117,14 +117,20 @@ extern "C" int32_t WPADProbe_HLE(uint32_t chan, uint32_t typePtr)
     // before the next PADRead, and only Poll() brings a dropped remote back.
     WiiRemoteInput::Poll();
 
-    // A real Bluetooth remote: WPAD_DEV_CORE (0) for a bare
-    // remote, WPAD_DEV_FREESTYLE (1) with a Nunchuk. The game reads the type
-    // from here (not from KPADStatus.dev_type) to pick its control scheme.
+    // A real Bluetooth remote: WPAD_DEV_CORE (0) for a bare remote,
+    // WPAD_DEV_FREESTYLE (1) with a Nunchuk, WPAD_DEV_CLASSIC (2) with a Classic
+    // Controller. The game reads the type from here (not from
+    // KPADStatus.dev_type) to pick its control scheme, and re-reads it when it
+    // changes, which is what makes an extension swap mid-game work like on the
+    // console. EffectiveKind keeps the last type through SDL's re-creation of
+    // the joystick after a swap.
+    const WiiRemoteInput::Kind kind = WiiRemoteInput::EffectiveKind(chan);
     if (WiiRemoteInput::IsRemoteChannel(chan)) {
         if (typePtr != 0) {
-            Memory::Write32(typePtr, WiiRemoteInput::KindForPort(chan) == WiiRemoteInput::Kind::RemoteWithNunchuk
-                                         ? 1u
-                                         : WpadContract::kExtensionCore);
+            uint32_t type = WpadContract::kExtensionCore;
+            if (kind == WiiRemoteInput::Kind::RemoteWithNunchuk) type = 1u;
+            if (kind == WiiRemoteInput::Kind::RemoteWithClassic) type = 2u;
+            Memory::Write32(typePtr, type);
         }
         return kStatusOk;
     }
