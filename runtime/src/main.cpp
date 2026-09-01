@@ -23,6 +23,10 @@
 #include <unordered_map>
 #include <vector>
 
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
+
 #if defined(_WIN32)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -38,7 +42,12 @@
 #include <dbghelp.h>
 #else
 #include <signal.h>
+#if defined(__x86_64__)
+// Only the x86 POSIX fault path inspects ucontext_t to recover the page-fault
+// write bit. macOS deprecates ucontext and requires _XOPEN_SOURCE just to
+// include the header, while the arm64 handler does not use it at all.
 #include <ucontext.h>
+#endif
 #include <unistd.h>
 #endif
 
@@ -50,6 +59,7 @@
 #include "ppc_runtime.h"
 #include "aurora_events.h"
 #include "wii_remote_input.h"
+#include "discord_presence.h"
 #include "fiber_manager.h"
 #include "hle_stubs.h"
 #include "runtime_config.h"
@@ -922,6 +932,7 @@ constexpr DWORD kCppExceptionCodeMsvc = 0xE06D7363;
 // AddressSanitizer uses STATUS_FATAL_APP_EXIT when it detects an error and wants to report it.
 // We must let ASan's handler run so it can print file/line information.
 constexpr DWORD kAsanFatalAppExit = 0x40000015; // STATUS_FATAL_APP_EXIT
+LONG ReportFatalSehAndExit(EXCEPTION_POINTERS* info);
 
 void ReportStructuredException(EXCEPTION_POINTERS* info) {
     if (!info || !info->ExceptionRecord) {
@@ -1023,13 +1034,34 @@ LONG CALLBACK SehLogger(EXCEPTION_POINTERS* info) {
         info->ExceptionRecord->ExceptionCode == kAsanFatalAppExit) { // ASan reporting - let it print first
         return EXCEPTION_CONTINUE_SEARCH;
     }
-    
+    // Software-raised exceptions (customer bit set) are used for internal control flow by
+    // system DLLs (e.g. msxml6 while mscms parses a display colour profile) and are caught
+    // by their own frame handlers. Only hardware faults are fatal at first chance; anything
+    // else that truly goes unhandled reaches UnhandledSehFilter.
+    if ((info->ExceptionRecord->ExceptionCode & 0x20000000u) != 0) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    return ReportFatalSehAndExit(info);
+}
+
+LONG WINAPI UnhandledSehFilter(EXCEPTION_POINTERS* info) {
+    if (info == nullptr || info->ExceptionRecord == nullptr) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    const DWORD code = info->ExceptionRecord->ExceptionCode;
+    if (code == kCppExceptionCodeGcc || code == kCppExceptionCodeMsvc || code == kAsanFatalAppExit) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    return ReportFatalSehAndExit(info);
+}
+
+LONG ReportFatalSehAndExit(EXCEPTION_POINTERS* info) {
     // Guard against re-entrancy: if we crash while reporting, don't recurse
     static std::atomic_flag s_inCrashHandler = ATOMIC_FLAG_INIT;
     if (s_inCrashHandler.test_and_set()) {
         std::_Exit(EXIT_FAILURE);
     }
-    
+
     // Report the structured exception with detailed information
     ReportStructuredException(info);
     const auto* record = info->ExceptionRecord;
@@ -1064,6 +1096,7 @@ LONG CALLBACK SehLogger(EXCEPTION_POINTERS* info) {
 void InstallSehLogger() {
     if (!g_vectoredSehHandle) {
         g_vectoredSehHandle = AddVectoredExceptionHandler(1, SehLogger);
+        SetUnhandledExceptionFilter(UnhandledSehFilter);
     }
 }
 #else
@@ -1294,6 +1327,9 @@ int RuntimeMain(int argc, char** argv) {
             throw std::invalid_argument("The game runtime does not accept command-line options; use Config.toml through the installed host.");
         }
         RuntimeConfigFile::LogLoadedConfig();
+        if (RuntimeConfigFile::DiscordPresenceEnabled()) {
+            DiscordPresence::Initialize(RuntimeConfigFile::DiscordClientId(), "Mario Kart Wii");
+        }
         SystemBridge::Initialize();
         TranslatedFunctionRegistry::Finalize();
 
@@ -1345,9 +1381,21 @@ int RuntimeMain(int argc, char** argv) {
             const char* configName;
             AuroraBackend backend;
         };
+#if defined(__APPLE__)
+        static constexpr std::array<GraphicsBackendEntry, 2> kGraphicsBackends{{
+            {"auto", BACKEND_AUTO}, {"metal", BACKEND_METAL},
+        }};
+// only vulkan for linux
+#elif defined(__linux__)
+            static constexpr std::array<GraphicsBackendEntry, 2> kGraphicsBackends{{
+            {"auto", BACKEND_AUTO}, {"vulkan", BACKEND_VULKAN},
+        }};
+#elif defined(_WIN32)
         static constexpr std::array<GraphicsBackendEntry, 3> kGraphicsBackends{{
             {"auto", BACKEND_AUTO}, {"d3d12", BACKEND_D3D12}, {"vulkan", BACKEND_VULKAN},
         }};
+
+#endif
         const auto backendDisplayName = [](AuroraBackend value) -> const char* {
             for (const auto& entry : kGraphicsBackends) {
                 if (entry.backend == value) {
@@ -1425,6 +1473,7 @@ int RuntimeMain(int argc, char** argv) {
         Fiber::GuestFiberManager::Shutdown();
         WindowPlacementPersistence::Flush(true);
         aurora_shutdown();
+        DiscordPresence::Shutdown();
         SetRuntimeExitCodeImpl(0);
         ShutdownProcessTranscript();
         return 0;
@@ -1442,6 +1491,7 @@ int RuntimeMain(int argc, char** argv) {
         Fiber::GuestFiberManager::Shutdown();
         WindowPlacementPersistence::Flush(true);
         aurora_shutdown();
+        DiscordPresence::Shutdown();
         ShutdownProcessTranscript();
         return 1;
     } catch (const std::exception& ex) {
@@ -1453,6 +1503,7 @@ int RuntimeMain(int argc, char** argv) {
         Fiber::GuestFiberManager::Shutdown();
         WindowPlacementPersistence::Flush(true);
         aurora_shutdown();
+        DiscordPresence::Shutdown();
         ShutdownProcessTranscript();
         return 1;
     }

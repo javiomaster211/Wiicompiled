@@ -18,6 +18,7 @@
 #include <utility>
 #include <vector>
 #include <toml.hpp>
+#include "platform/host_platform.h"
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -73,6 +74,11 @@ struct RuntimeUserConfig {
     // corrected accelerometer, buttons) to wii_accel_trace.csv next to Config.toml.
     std::optional<bool> wiiAccelTrace;
     std::optional<bool> networkEnabled;
+    std::optional<bool> discordPresenceEnabled;
+    // The application ID of the WiiCompiled Discord application. This is only
+    // used by the base product; Retro Rewind supplies its own ID through the
+    // standard Dolphin /dev/dolphin interface.
+    std::optional<std::string> discordClientId;
     std::optional<std::string> nandRoot;
     std::optional<std::string> dvdRoot;
     // The one canonical Retro Rewind installation, owned and updated by the frontend. Setup records
@@ -156,7 +162,14 @@ inline bool IsSupportedResolutionMultiplier(float value) {
 // Must stay in step with the backend table in main.cpp, which is what actually
 // maps these to AuroraBackend.
 inline bool IsSupportedGraphicsApi(std::string_view value) {
+#if defined(__APPLE__)
+    static constexpr std::array<std::string_view, 2> values{"auto", "metal"};
+// only vulkan for linux
+#elif defined(__linux__)
+    static constexpr std::array<std::string_view, 2> values{"auto", "vulkan"};
+#elif defined(_WIN32)
     static constexpr std::array<std::string_view, 3> values{"auto", "d3d12", "vulkan"};
+#endif
     return std::find(values.begin(), values.end(), value) != values.end();
 }
 
@@ -187,6 +200,8 @@ inline std::optional<std::filesystem::path> ExecutableDirectory() {
         }
         buffer.resize(buffer.size() * 2);
     }
+#elif defined(__APPLE__)
+    return RuntimePlatform::ExecutableDirectory();
 #else
     // /proc/self/exe is a Linux-specific magic symlink to the running executable; readlink()
     // does not NUL-terminate and silently truncates if the buffer is too small, so this grows
@@ -244,6 +259,8 @@ inline std::filesystem::path ApplicationDataDirectory() {
         CoTaskMemFree(rawPath);
         return directory;
     }
+#elif defined(__APPLE__)
+    return RuntimePlatform::ApplicationDataDirectory(kApplicationDirectoryName);
 #else
     // XDG Base Directory spec equivalent of FOLDERID_LocalAppData: $XDG_DATA_HOME if set and
     // non-empty, otherwise its default of $HOME/.local/share.
@@ -306,6 +323,12 @@ inline void EnsureConfigFile() {
               "mix_worker = true\n\n"
               "[network]\n"
               "enabled = true\n\n"
+              "[discord]\n"
+              "# Rich Presence talks only to a locally-running Discord client.\n"
+              "# Retro Rewind supplies its official app ID automatically. Set this\n"
+              "# to WiiCompiled's Discord application ID for basic base-game presence.\n"
+              "enabled = true\n"
+              "# client_id = \"123456789012345678\"\n\n"
               "[paths]\n"
               "# dvd_root = \"D:\\\\MarioKartWii\\\\DATA\"\n"
               "# nand_root = \"D:\\\\WiiNand\"\n"
@@ -445,6 +468,8 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     config.wiiAccelOffsetZ = FindConfigValue<double>(document, "controller", "wii_accel_offset_z");
     config.wiiAccelTrace = FindConfigValue<bool>(document, "controller", "wii_accel_trace");
     config.networkEnabled = FindConfigValue<bool>(document, "network", "enabled");
+    config.discordPresenceEnabled = FindConfigValue<bool>(document, "discord", "enabled");
+    config.discordClientId = FindConfigValue<std::string>(document, "discord", "client_id");
 
     config.nandRoot = FindConfigValue<std::string>(document, "paths", "nand_root");
     config.dvdRoot = FindConfigValue<std::string>(document, "paths", "dvd_root");
@@ -903,6 +928,14 @@ inline std::string RetroRewindRoot(std::string fallback = "") {
     return Get().retroRewindRoot.value_or(std::move(fallback));
 }
 
+inline bool DiscordPresenceEnabled(bool fallback = true) {
+    return Get().discordPresenceEnabled.value_or(fallback);
+}
+
+inline std::string DiscordClientId(std::string fallback = "1543984562369990706") {
+    return Get().discordClientId.value_or(std::move(fallback));
+}
+
 inline const std::vector<std::string>& OverlayRoots() {
     return Get().overlayRoots;
 }
@@ -958,6 +991,9 @@ inline void LogLoadedConfig() {
             }
             if (config.networkEnabled) {
                 std::cout << " network_enabled=" << (*config.networkEnabled ? "true" : "false");
+            }
+            if (config.discordPresenceEnabled) {
+                std::cout << " discord_enabled=" << (*config.discordPresenceEnabled ? "true" : "false");
             }
             if (config.nandRoot) {
                 std::cout << " nand_root=" << *config.nandRoot;
