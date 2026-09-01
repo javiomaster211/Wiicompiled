@@ -198,16 +198,14 @@ std::array<PADButtonMapping, PAD_BUTTON_COUNT> g_defaultButtonsJoyPair{{
 // singles them out, so they are picked by the name the driver gives them (see
 // __PADSetDefaultMapping). Wii Remotes, with or without a Nunchuk or Classic
 // Controller, are read by the game through KPAD instead and never get a
-// GameCube mapping (the runtime hides those ports from PADRead); the Classic
-// Controller name is still matched here only so a build without that KPAD path
-// gets a sensible default.
+// GameCube mapping (the runtime hides those ports from PADRead).
 
 // Nintendo's labelled layout: A on the right accelerates, B at the bottom
 // brakes. SDL's Wii driver reports ZL/ZR as the LEFT_TRIGGER/RIGHT_TRIGGER
 // axes, never as shoulder buttons, so they are left unbound here and picked up
 // by aurora's default axis mapping (g_defaultAxes) the same way every
 // analog-trigger pad's L/R is.
-std::array<PADButtonMapping, PAD_BUTTON_COUNT> g_defaultButtonsWiiClassic{{
+std::array<PADButtonMapping, PAD_BUTTON_COUNT> g_defaultButtonsWiiUPro{{
     {SDL_GAMEPAD_BUTTON_EAST, PAD_BUTTON_A},
     {SDL_GAMEPAD_BUTTON_SOUTH, PAD_BUTTON_B},
     {SDL_GAMEPAD_BUTTON_NORTH, PAD_BUTTON_X},
@@ -438,20 +436,16 @@ static void reset_alt_button_mapping(aurora::input::GameController* controller) 
   }
 }
 
-// SDL's hidapi Wii driver names its gamepads "Nintendo Wii Remote with Classic
-// Controller" and "Nintendo Wii U Pro Controller" (the extension is part of the
-// name because the driver re-registers the gamepad when one is plugged in).
+// SDL's hidapi Wii driver names the pad "Nintendo Wii U Pro Controller"; the
+// other names it produces are Wii Remotes, which the game reads through KPAD
+// and which therefore never take a GameCube mapping.
 static bool wii_default_mapping(const aurora::input::GameController* controller,
                                 std::array<PADButtonMapping, PAD_BUTTON_COUNT>& out) {
   const char* name = SDL_GetGamepadName(controller->m_controller);
-  if (name == nullptr) {
+  if (name == nullptr || SDL_strstr(name, "Wii U Pro Controller") == nullptr) {
     return false;
   }
-  if (SDL_strstr(name, "Wii U Pro Controller") == nullptr &&
-      (SDL_strstr(name, "Wii Remote") == nullptr || SDL_strstr(name, "Classic Controller") == nullptr)) {
-    return false;
-  }
-  out = g_defaultButtonsWiiClassic;
+  out = g_defaultButtonsWiiUPro;
   return true;
 }
 
@@ -797,20 +791,16 @@ u32 PADRead(PADStatus* status) {
     if (controller) {
       EnsureMappingLoaded(controller);
 
-      // Wii Classic Controller / Wii U Pro Controller raw D-pad fallback.
-      // SDL's HIDAPI Wii driver posts the D-pad as joystick buttons 11-14 (the
-      // SDL_GAMEPAD_BUTTON_DPAD_* values) and never as a hat, but the mapping
-      // SDL generates for HIDAPI pads binds the D-pad to hat 0, so
-      // SDL_GetGamepadButton(DPAD_*) stays false. Keep this restricted to the
-      // Wii driver's pads so raw button indices don't interfere with other
-      // controller types.
+      // Wii U Pro Controller raw D-pad fallback. SDL's HIDAPI Wii driver posts
+      // the D-pad as joystick buttons 11-14 (the SDL_GAMEPAD_BUTTON_DPAD_*
+      // values) and never as a hat, but the mapping SDL generates for HIDAPI
+      // pads binds the D-pad to hat 0, so SDL_GetGamepadButton(DPAD_*) stays
+      // false. Keep this restricted to the Wii driver's pad so raw button
+      // indices don't interfere with other controller types.
       const char* name = SDL_GetGamepadName(controller->m_controller);
-      const bool isWiiClassic =
-          name != nullptr &&
-          ((SDL_strstr(name, "Wii Remote") != nullptr && SDL_strstr(name, "Classic Controller") != nullptr) ||
-           SDL_strstr(name, "Wii U Pro Controller") != nullptr);
+      const bool isWiiUPro = name != nullptr && SDL_strstr(name, "Wii U Pro Controller") != nullptr;
 
-      if (isWiiClassic) {
+      if (isWiiUPro) {
         SDL_Joystick* joystick =
             SDL_GetGamepadJoystick(controller->m_controller);
 
@@ -823,7 +813,6 @@ u32 PADRead(PADStatus* status) {
           }
         }
 
-        // Classic Controller / Classic Controller Pro raw D-pad fallback.
         // Up    = button 11
         if (raw & (1u << 11)) {
           status[i].button |= PAD_BUTTON_UP;
