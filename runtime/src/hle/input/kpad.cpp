@@ -1,4 +1,5 @@
 #include "hle_stubs.h"
+#include "ir_pointer.h"
 #include "memory.h"
 #include "wii_remote_input.h"
 
@@ -17,9 +18,10 @@ constexpr uint32_t kKpadStatusSize = 0x84;
 
 // KPADStatus field offsets (RVL SDK).
 constexpr uint32_t kHold = 0x00, kTrig = 0x04, kRelease = 0x08, kAcc = 0x0C, kAccValue = 0x18,
-                   kAccSpeed = 0x1C, kPos = 0x20, kAccVertical = 0x54, kDevType = 0x5C, kWpadErr = 0x5D,
-                   kDpdValidFg = 0x5E, kDataFormat = 0x5F, kFsStick = 0x60, kFsAcc = 0x68, kFsAccValue = 0x74,
-                   kFsAccSpeed = 0x78;
+                   kAccSpeed = 0x1C, kPos = 0x20, kPosVec = 0x28, kPosSpeed = 0x30, kHorizon = 0x34,
+                   kHoriVec = 0x3C, kHoriSpeed = 0x44, kDist = 0x48, kDistVec = 0x4C, kDistSpeed = 0x50,
+                   kAccVertical = 0x54, kDevType = 0x5C, kWpadErr = 0x5D, kDpdValidFg = 0x5E, kDataFormat = 0x5F,
+                   kFsStick = 0x60, kFsAcc = 0x68, kFsAccValue = 0x74, kFsAccSpeed = 0x78;
 // KPADStatus.ex_status.cl (KPADEXStatus, Classic Controller view).
 constexpr uint32_t kClHold = 0x60, kClTrig = 0x64, kClRelease = 0x68, kClLStick = 0x6C, kClRStick = 0x74,
                    kClLTrigger = 0x7C, kClRTrigger = 0x80;
@@ -52,6 +54,8 @@ struct ChannelState {
     uint32_t prevClHold = 0;
     float prevAcc[3] = {0.0f, -1.0f, 0.0f};
     float prevFsAcc[3] = {0.0f, -1.0f, 0.0f};
+    float prevPos[2] = {};
+    bool prevPosValid = false;
 };
 
 std::array<ChannelState, 4> g_channels{};
@@ -107,10 +111,38 @@ int32_t WriteStatus(uint32_t chan, uint32_t addr, const WiiRemoteInput::KpadSamp
     Memory::WriteFloat32(addr + kAccSpeed, Distance(sample->acc, state.prevAcc));
     for (int i = 0; i < 3; ++i) state.prevAcc[i] = sample->acc[i];
 
-    // No IR pointer: pos .. acc_vertical zeroed and dpd_valid_fg clear, which
-    // the game treats as "pointing away from the screen".
-    WriteZeroFloats(addr + kPos, (kAccVertical + 8 - kPos) / 4);
-    Memory::Write8(addr + kDpdValidFg, 0);
+    // The pointer: the remote's IR camera when it sees a sensor bar, else the
+    // mouse standing in on channel 0 only — there is one mouse, and the menus
+    // belong to player 1 (see ir_pointer.cpp).
+    float posX = 0.0f;
+    float posY = 0.0f;
+    if (IrPointer::SampleForChannel(chan, posX, posY)) {
+        Memory::WriteFloat32(addr + kPos, posX);
+        Memory::WriteFloat32(addr + kPos + 4, posY);
+        const float vecX = state.prevPosValid ? posX - state.prevPos[0] : 0.0f;
+        const float vecY = state.prevPosValid ? posY - state.prevPos[1] : 0.0f;
+        Memory::WriteFloat32(addr + kPosVec, vecX);
+        Memory::WriteFloat32(addr + kPosVec + 4, vecY);
+        Memory::WriteFloat32(addr + kPosSpeed, std::sqrt(vecX * vecX + vecY * vecY));
+        // A level, steady remote: horizon at (1, 0) keeps the cursor unrotated,
+        // and dist 1.0 is a neutral sensor-bar distance.
+        Memory::WriteFloat32(addr + kHorizon, 1.0f);
+        Memory::WriteFloat32(addr + kHorizon + 4, 0.0f);
+        WriteZeroFloats(addr + kHoriVec, 3); // hori_vec and hori_speed
+        Memory::WriteFloat32(addr + kDist, 1.0f);
+        WriteZeroFloats(addr + kDistVec, 2); // dist_vec and dist_speed
+        WriteZeroFloats(addr + kAccVertical, 2);
+        Memory::Write8(addr + kDpdValidFg, 2); // both sensor-bar dots tracked
+        state.prevPos[0] = posX;
+        state.prevPos[1] = posY;
+        state.prevPosValid = true;
+    } else {
+        // pos .. acc_vertical zeroed and dpd_valid_fg clear, which the game
+        // treats as "pointing away from the screen".
+        WriteZeroFloats(addr + kPos, (kAccVertical + 8 - kPos) / 4);
+        Memory::Write8(addr + kDpdValidFg, 0);
+        state.prevPosValid = false;
+    }
 
     const uint8_t devType = sample->hasClassic ? kDevClassic : sample->hasNunchuk ? kDevFreestyle : kDevCore;
     const uint8_t dataFormat =
@@ -170,7 +202,9 @@ void WriteUnifiedStatus(uint32_t addr, const WiiRemoteInput::KpadSample* sample)
     Memory::Write16(addr + kUAccX, RawAcc(-sample->acc[0]));
     Memory::Write16(addr + kUAccY, RawAcc(sample->acc[2]));
     Memory::Write16(addr + kUAccZ, RawAcc(-sample->acc[1]));
-    // No IR: every DPDObject invalid (x/y at the sensor's out-of-range value).
+    // No raw IR objects: every DPDObject invalid (x/y at the sensor's
+    // out-of-range value). The mouse pointer is served through KPADStatus,
+    // whose DPD fields the game reads; nothing consumes the raw objects here.
     for (uint32_t i = 0; i < 4; ++i) {
         Memory::Write16(addr + kUObj + i * 8, 0x3FF);
         Memory::Write16(addr + kUObj + i * 8 + 2, 0x3FF);
