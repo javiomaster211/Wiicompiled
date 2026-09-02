@@ -424,18 +424,15 @@ void DrawWiiRemoteSettings(uint32_t selectedGamePort) {
         ImGui::TextDisabled("(or the red SYNC button) on the remote. Leave the PIN empty.");
         ImGui::TextDisabled("A remote that was paired before also needs to be turned on with 1+2/SYNC.");
     }
-    // With a DolphinBar in Mode 4 the rescan machinery is bypassed: its slots
-    // never unplug, and the driver probes them continuously (see Poll()).
-    ImGui::BeginDisabled(bar.mode4);
     if (ImGui::Checkbox("Keep scanning for Wii Remotes (like Dolphin's Continuous Scanning)",
                         &g_wiiContinuousScan)) {
         RuntimeConfigFile::SetWiiContinuousScanEnabled(g_wiiContinuousScan);
     }
-    ImGui::EndDisabled();
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+    if (ImGui::IsItemHovered()) {
         if (bar.mode4) {
-            ImGui::SetTooltip("Not needed with a DolphinBar: its four slots are probed continuously,\n"
-                              "so a remote synced to the bar shows up by itself.");
+            ImGui::SetTooltip("A remote synced to the bar shows up by itself (its slots are probed\n"
+                              "continuously); this rescan only helps a Bluetooth-paired remote used\n"
+                              "alongside the bar, and runs less often while the bar is present.");
         } else {
             ImGui::SetTooltip("While no Wii controller is connected, re-check Bluetooth every 2 seconds so a\n"
                               "remote that dropped out (\"Communications with the controller have been\n"

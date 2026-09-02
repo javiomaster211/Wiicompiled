@@ -368,12 +368,16 @@ static void ResetButtonPacketType(SDL_DriverWii_Context *ctx)
 [==[    ctx->joystick = joystick;
 
     InitializeExtension(ctx);
-    if (!InitializeAccelerometerCalibration(ctx)) {
-        SDL_LogWarn(SDL_LOG_CATEGORY_INPUT,
-                    "HIDAPI Wii: Using fallback accelerometer calibration: %s", SDL_GetError());
-    }
-    if (!InitializeIRCamera(ctx)) {
-        SDL_LogWarn(SDL_LOG_CATEGORY_INPUT, "HIDAPI Wii: Failed to initialize IR camera: %s", SDL_GetError());
+    // The Wii U Pro Controller has neither the accelerometer's EEPROM block
+    // nor an IR camera; every write below would only burn its sync timeouts.
+    if (ctx->m_eExtensionControllerType != k_eWiiExtensionControllerType_WiiUPro) {
+        if (!InitializeAccelerometerCalibration(ctx)) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_INPUT,
+                        "HIDAPI Wii: Using fallback accelerometer calibration: %s", SDL_GetError());
+        }
+        if (!InitializeIRCamera(ctx)) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_INPUT, "HIDAPI Wii: Failed to initialize IR camera: %s", SDL_GetError());
+        }
     }
 
     GetMotionPlusState(ctx, &ctx->m_bMotionPlusPresent, &ctx->m_ucMotionPlusMode);
@@ -410,7 +414,10 @@ static void ResetButtonPacketType(SDL_DriverWii_Context *ctx)
     const SDL_PropertiesID properties = SDL_GetJoystickProperties(joystick);
     SDL_SetNumberProperty(properties, "AURORA.wii.status_flags", ctx->m_rgucReadBuffer[3]);
 
-    if ((ctx->m_rgucReadBuffer[3] & 0x08) == 0) {
+    /* WiiCompiled: the Wii U Pro Controller has no IR camera, so its status
+     * reports never carry the IR bit; do not read that as "camera fell off". */
+    if (ctx->m_eExtensionControllerType != k_eWiiExtensionControllerType_WiiUPro &&
+        (ctx->m_rgucReadBuffer[3] & 0x08) == 0) {
         SDL_LogWarn(SDL_LOG_CATEGORY_INPUT, "HIDAPI Wii: IR camera disabled; reinitializing");
         if (InitializeIRCamera(ctx)) {
             SDL_SetNumberProperty(properties, "AURORA.wii.status_flags", ctx->m_rgucReadBuffer[3] | 0x08);

@@ -32,6 +32,11 @@ constexpr uint64_t kFastScanWindowMs = 15000;
 // How long the Wii driver hint stays at "0" during a rescan; SDL applies hint
 // changes on its next joystick update, once per pumped frame.
 constexpr uint64_t kRescanDriverOffMs = 100;
+// Rescan cadence while a DolphinBar (mode 4) is present. Remotes synced to the
+// bar come back through the SDL-side slot probe, not through re-enumeration,
+// so rescanning only serves a Bluetooth remote used alongside the bar — and
+// each rescan needlessly closes and re-opens the bar's four slot handles.
+constexpr uint64_t kDolphinBarScanIntervalMs = 10000;
 
 constexpr float kStandardGravity = 9.80665f;
 
@@ -500,22 +505,9 @@ void Poll() {
         g_lastScanMs = SDL_GetTicks();
         return;
     }
-    // A DolphinBar in mode 4 keeps its four slot interfaces present at all
-    // times and never raises a hotplug event, so re-enumerating cannot find
-    // anything new: the SDL-side reconnect probe already watches every open
-    // slot once a second, and toggling the driver hint would only cycle those
-    // handles. Skip the rescan machinery while the bar is around (detection
-    // stays fresh, so unplugging the bar brings Bluetooth scanning back).
+    // Keep the DolphinBar detection fresh (throttled inside): plugging the bar
+    // in mid-session slows the cadence below, unplugging it restores it.
     DolphinBar::Refresh();
-    if (DolphinBar::Cached().mode4) {
-        if (g_scanning) {
-            RT_LOG(RT_TAG_CONFIG)
-                << "DolphinBar Mode 4 present; its slots are probed continuously, rescan not needed"
-                << std::endl;
-        }
-        g_scanning = false;
-        return;
-    }
     if (!RuntimeConfigFile::WiiContinuousScanEnabled(true)) {
         g_scanning = false;
         return;
@@ -530,7 +522,9 @@ void Poll() {
     if (now - g_lostAtMs < kScanStartDelayMs) {
         return;
     }
-    const uint64_t interval = now - g_lostAtMs < kFastScanWindowMs ? kFastScanIntervalMs : kScanIntervalMs;
+    const uint64_t interval = DolphinBar::Cached().mode4             ? kDolphinBarScanIntervalMs
+                              : now - g_lostAtMs < kFastScanWindowMs ? kFastScanIntervalMs
+                                                                     : kScanIntervalMs;
     if (now - g_lastScanMs < interval) {
         return;
     }
