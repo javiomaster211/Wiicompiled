@@ -86,9 +86,12 @@ std::wstring BusReportedDescription(const wchar_t* interfacePath) {
 Status DetectNow() {
     Status status;
     // The list can grow between the size query and the fetch; retry like the
-    // CM_Get_Device_Interface_List documentation prescribes.
+    // CM_Get_Device_Interface_List documentation prescribes. On a failed last
+    // attempt the buffer contents are undefined, so report "no bar" rather
+    // than parse it.
     std::vector<wchar_t> list;
-    for (int attempt = 0; attempt < 4; ++attempt) {
+    bool fetched = false;
+    for (int attempt = 0; attempt < 4 && !fetched; ++attempt) {
         ULONG characters = 0;
         if (CM_Get_Device_Interface_List_SizeW(&characters, const_cast<GUID*>(&kHidInterfaceGuid), nullptr,
                                                CM_GET_DEVICE_INTERFACE_LIST_PRESENT) != CR_SUCCESS ||
@@ -100,11 +103,13 @@ Status DetectNow() {
             CM_Get_Device_Interface_ListW(const_cast<GUID*>(&kHidInterfaceGuid), nullptr, list.data(),
                                           characters, CM_GET_DEVICE_INTERFACE_LIST_PRESENT);
         if (result == CR_SUCCESS) {
-            break;
-        }
-        if (result != CR_BUFFER_SMALL) {
+            fetched = true;
+        } else if (result != CR_BUFFER_SMALL) {
             return status;
         }
+    }
+    if (!fetched) {
+        return status;
     }
     // The list is a sequence of null-terminated paths ended by an empty one.
     for (const wchar_t* path = list.data(); *path != L'\0'; path += wcslen(path) + 1) {
@@ -141,23 +146,25 @@ Status DetectNow() {
 
 } // namespace
 
-Status Detect() {
-    return DetectNow();
-}
-
 Status Cached() {
     std::lock_guard<std::mutex> lock(g_mutex);
     return g_cached;
 }
 
 void Refresh() {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    const auto now = std::chrono::steady_clock::now();
-    if (g_lastRefresh.time_since_epoch().count() != 0 && now - g_lastRefresh < std::chrono::seconds(1)) {
-        return;
+    {
+        // Claim the refresh slot under the lock, but enumerate outside it, so
+        // a slow PnP query never blocks a concurrent Cached() reader.
+        std::lock_guard<std::mutex> lock(g_mutex);
+        const auto now = std::chrono::steady_clock::now();
+        if (g_lastRefresh.time_since_epoch().count() != 0 && now - g_lastRefresh < std::chrono::seconds(1)) {
+            return;
+        }
+        g_lastRefresh = now;
     }
-    g_lastRefresh = now;
-    g_cached = DetectNow();
+    const Status status = DetectNow();
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_cached = status;
 }
 
 } // namespace DolphinBar

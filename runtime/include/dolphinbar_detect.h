@@ -25,9 +25,6 @@ struct Status {
     int mode4Slots = 0;    // passthrough slots seen; a bar in mode 4 exposes 4
 };
 
-// Enumerates now. Costs a few device-property lookups; prefer Cached()/Refresh().
-Status Detect();
-
 // Result of the most recent Refresh() (or an all-false Status before the first).
 // By value: Refresh() may run concurrently on another thread.
 Status Cached();

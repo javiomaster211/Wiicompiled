@@ -26,8 +26,8 @@ Bar plugged in, LED 4 lit, no remote on. Launch the game and wait 30 s.
 - Expected: `Mayflash DolphinBar detected (Mode 4, 4 slot(s))` at startup,
   `Wii HID trace: 4 Wii Remote HID interface(s) present`, **no** controller
   connect ("port N -> Wii Remote...") lines, and `Wii Remote rescan #N` lines
-  only at a relaxed ~10 s cadence (they serve Bluetooth remotes used alongside
-  the bar).
+  every ~2 s only for the first ~15 s and then at a relaxed ~10 s cadence
+  (they serve Bluetooth remotes used alongside the bar).
 - Broken would be: four "Wii Remote with Unknown Extension" ghosts connecting
   and dropping, or rescan lines every 2 seconds.
 

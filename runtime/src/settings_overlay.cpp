@@ -340,16 +340,24 @@ void DrawWiiRemotePointer(uint32_t port) {
         ImGui::TextDisabled("IR camera: no sensor bar visible.");
     }
     bool changed = ImGui::SliderFloat("IR scale", &g_wiiIrScale, 0.2f, 3.0f, "%.2f");
+    bool released = ImGui::IsItemDeactivatedAfterEdit();
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("How far the pointer travels for a given wrist movement.\n"
                           "Raise it if you cannot reach the screen edges, lower it if the pointer overshoots.");
     }
     changed = ImGui::SliderFloat("IR vertical offset", &g_wiiIrOffsetY, -1.0f, 1.0f, "%.2f") || changed;
+    released = ImGui::IsItemDeactivatedAfterEdit() || released;
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Shifts the pointer up or down to compensate for a sensor bar\n"
                           "mounted above (positive) or below (negative) the screen.");
     }
+    // While dragging, only the in-memory value moves (the pointer follows it
+    // live); Config.toml is rewritten once, when the slider is let go.
     if (changed) {
+        RuntimeConfigFile::Mutable().wiiIrScale = g_wiiIrScale;
+        RuntimeConfigFile::Mutable().wiiIrOffsetY = g_wiiIrOffsetY;
+    }
+    if (released) {
         RuntimeConfigFile::SetWiiIrMapping(g_wiiIrScale, g_wiiIrOffsetY);
     }
 }

@@ -5,6 +5,7 @@
 #include <SDL3/SDL_gamepad.h>
 #include <SDL3/SDL_joystick.h>
 #include <SDL3/SDL_properties.h>
+#include <SDL3/SDL_timer.h>
 
 #include <imgui.h>
 
@@ -22,6 +23,16 @@ constexpr uint32_t kChannels = 4;
 // jitter; blend this much of the new sample in per KPAD read.
 constexpr float kSmoothing = 0.5f;
 
+// A hand crossing the sensor bar (or grazing the camera's field of view) blanks
+// the dots for a few reports; hold the last position this long before treating
+// the camera as lost, so the pointer does not snap to the mouse and back.
+constexpr uint64_t kDropoutHoldMs = 150;
+
+// The driver bumps AURORA.wii.ir_seq on every IR-carrying report (~100 Hz). A
+// sequence frozen for this long means the remote stopped reporting (dead
+// batteries, dropped link) and the properties are stale, not a steady hand.
+constexpr uint64_t kStaleAfterMs = 300;
+
 // Written on the presenting thread, read on the guest thread inside KPADRead.
 // Plain atomics: the axes may tear by one frame against each other, which is
 // well under a pixel of pointer motion.
@@ -30,11 +41,14 @@ std::atomic<float> g_mouseX{0.0f};
 std::atomic<float> g_mouseY{0.0f};
 
 // Per-channel camera state. Only touched from the guest thread inside
-// SampleForChannel, except the two flags the overlay polls, which are atomic.
+// SampleForChannel, except the flags the overlay polls, which are atomic.
 struct CameraState {
     bool smoothed = false; // whether smoothX/Y hold a running average
     float smoothX = 0.0f;
     float smoothY = 0.0f;
+    uint64_t lastDotsMs = 0;    // when the camera last saw a sensor-bar dot
+    int64_t lastSeq = -1;       // last AURORA.wii.ir_seq observed
+    uint64_t lastSeqChangeMs = 0;
     std::atomic<bool> usingCamera{false};
     std::atomic<float> rawX{0.0f};
     std::atomic<float> rawY{0.0f};
@@ -42,9 +56,10 @@ struct CameraState {
 std::array<CameraState, kChannels> g_camera;
 
 // Reads the AURORA.wii.ir_* joystick properties the patched SDL Wii driver
-// publishes for this channel's remote. False when the channel has no remote or
-// its camera sees no sensor-bar dot right now.
-bool ReadCamera(uint32_t chan, float& camX, float& camY) {
+// publishes for this channel's remote. False when the channel has no remote,
+// its camera sees no sensor-bar dot right now, or the properties went stale
+// (the sequence number stopped advancing: the remote stopped reporting).
+bool ReadCamera(uint32_t chan, uint64_t now, float& camX, float& camY) {
     SDL_Gamepad* gamepad = SDL_GetGamepadFromPlayerIndex(static_cast<int>(chan));
     if (gamepad == nullptr) {
         return false;
@@ -54,6 +69,14 @@ bool ReadCamera(uint32_t chan, float& camX, float& camY) {
         return false;
     }
     const SDL_PropertiesID properties = SDL_GetJoystickProperties(joystick);
+    CameraState& state = g_camera[chan];
+    const int64_t seq = SDL_GetNumberProperty(properties, "AURORA.wii.ir_seq", -1);
+    if (seq != state.lastSeq) {
+        state.lastSeq = seq;
+        state.lastSeqChangeMs = now;
+    } else if (seq < 0 || now - state.lastSeqChangeMs > kStaleAfterMs) {
+        return false;
+    }
     if (!SDL_GetBooleanProperty(properties, "AURORA.wii.ir_valid", false)) {
         return false;
     }
@@ -84,9 +107,11 @@ bool SampleForChannel(uint32_t chan, float& x, float& y) {
         return false;
     }
     CameraState& state = g_camera[chan];
+    const uint64_t now = SDL_GetTicks();
     float camX = 0.0f;
     float camY = 0.0f;
-    if (ReadCamera(chan, camX, camY)) {
+    if (ReadCamera(chan, now, camX, camY)) {
+        state.lastDotsMs = now;
         state.rawX.store(camX, std::memory_order_relaxed);
         state.rawY.store(camY, std::memory_order_relaxed);
         state.usingCamera.store(true, std::memory_order_relaxed);
@@ -104,6 +129,13 @@ bool SampleForChannel(uint32_t chan, float& x, float& y) {
             state.smoothY = mappedY;
             state.smoothed = true;
         }
+        x = std::clamp(state.smoothX, -1.0f, 1.0f);
+        y = std::clamp(state.smoothY, -1.0f, 1.0f);
+        return true;
+    }
+    // A blink of the dots (a hand across the bar) is not a loss: keep serving
+    // the last position briefly instead of snapping to the mouse and back.
+    if (state.smoothed && now - state.lastDotsMs < kDropoutHoldMs) {
         x = std::clamp(state.smoothX, -1.0f, 1.0f);
         y = std::clamp(state.smoothY, -1.0f, 1.0f);
         return true;

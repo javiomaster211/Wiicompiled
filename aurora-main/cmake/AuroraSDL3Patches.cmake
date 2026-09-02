@@ -134,6 +134,7 @@ static void UpdateDeviceIdentity(SDL_HIDAPI_Device *device)
     bool m_bAccelCalibrationValid;
     Uint16 m_unAccelZero[3];
     Uint16 m_unAccelOne[3];
+    Uint32 m_unIRSequence; /* WiiCompiled: see PublishIRPointer */
     Uint8 m_rgucReadBuffer[k_unWiiPacketDataLength];
 ]==])
   _aurora_sdl3_replace("${_wii}" "Wii Remote factory accel calibration (EEPROM read)"
@@ -289,6 +290,12 @@ static EWiiExtensionControllerType GetExtensionType(Uint16 extension_id)
         return k_eWiiInputReportIDs_ButtonDataD;
     case k_eWiiExtensionControllerType_None:
         if (ctx->m_bReportSensors) {
+            /* 0x33 carries no extension bytes, and an active MotionPlus
+             * reports through them; it needs 0x37, whose 6 extension bytes
+             * fit the MotionPlus packet and keep its hotplug detection. */
+            if (ctx->m_ucMotionPlusMode != WII_MOTIONPLUS_MODE_NONE) {
+                return k_eWiiInputReportIDs_ButtonData7;
+            }
             return k_eWiiInputReportIDs_ButtonData3;
         } else {
             return k_eWiiInputReportIDs_ButtonData0;
@@ -354,6 +361,27 @@ static EWiiExtensionControllerType GetExtensionType(Uint16 extension_id)
     return WriteRegister(ctx, 0xB00030, &camera_enable, sizeof(camera_enable), true);
 }
 
+/* WiiCompiled: shared tail of the 0x33/0x37 IR parsers. The sequence number
+ * advances on every IR-carrying report, so a reader can tell a live but
+ * motionless pointer apart from stale properties left behind by a remote
+ * that stopped reporting. */
+static void PublishIRPointer(SDL_DriverWii_Context *ctx, SDL_Joystick *joystick, Uint32 sum_x, Uint32 sum_y, int valid_points)
+{
+    const SDL_PropertiesID properties = SDL_GetJoystickProperties(joystick);
+    SDL_SetNumberProperty(properties, "AURORA.wii.ir_seq", ++ctx->m_unIRSequence);
+    if (valid_points > 0) {
+        const float x = 1.0f - ((float)sum_x / (float)valid_points) / 1023.0f;
+        const float y = ((float)sum_y / (float)valid_points) / 767.0f;
+        SDL_SetBooleanProperty(properties, "AURORA.wii.ir_valid", true);
+        SDL_SetFloatProperty(properties, "AURORA.wii.ir_x", x);
+        SDL_SetFloatProperty(properties, "AURORA.wii.ir_y", y);
+        SDL_SendJoystickTouchpad(ctx->timestamp, joystick, 0, 0, true, x, y, 1.0f);
+    } else {
+        SDL_SetBooleanProperty(properties, "AURORA.wii.ir_valid", false);
+        SDL_SendJoystickTouchpad(ctx->timestamp, joystick, 0, 0, false, 0.0f, 0.0f, 0.0f);
+    }
+}
+
 static void ResetButtonPacketType(SDL_DriverWii_Context *ctx)
 {
     RequestButtonPacketType(ctx, GetButtonPacketType(ctx));
@@ -407,25 +435,36 @@ static void ResetButtonPacketType(SDL_DriverWii_Context *ctx)
     HandleButtonData(ctx, joystick, &data);
 
     if (ctx->m_eExtensionControllerType != k_eWiiExtensionControllerType_WiiUPro) {
+        // Wii U has separate battery level tracking
+        UpdatePowerLevelWii(joystick, ctx->m_rgucReadBuffer[6]);
+    }
 ]==]
 [==[    GetBaseButtons(&data, ctx->m_rgucReadBuffer + 1);
     HandleButtonData(ctx, joystick, &data);
 
+    /* WiiCompiled: snapshot the status bytes first - the IR camera re-init
+     * below issues synchronous writes whose acknowledgements overwrite
+     * m_rgucReadBuffer, which the battery read would otherwise consume. The
+     * Wii U Pro Controller has no IR camera, so its status reports never
+     * carry the IR bit; do not read that as "camera fell off". */
+    const Uint8 status_flags = ctx->m_rgucReadBuffer[3];
+    const Uint8 battery_level = ctx->m_rgucReadBuffer[6];
     const SDL_PropertiesID properties = SDL_GetJoystickProperties(joystick);
-    SDL_SetNumberProperty(properties, "AURORA.wii.status_flags", ctx->m_rgucReadBuffer[3]);
+    SDL_SetNumberProperty(properties, "AURORA.wii.status_flags", status_flags);
 
-    /* WiiCompiled: the Wii U Pro Controller has no IR camera, so its status
-     * reports never carry the IR bit; do not read that as "camera fell off". */
     if (ctx->m_eExtensionControllerType != k_eWiiExtensionControllerType_WiiUPro &&
-        (ctx->m_rgucReadBuffer[3] & 0x08) == 0) {
+        (status_flags & 0x08) == 0) {
         SDL_LogWarn(SDL_LOG_CATEGORY_INPUT, "HIDAPI Wii: IR camera disabled; reinitializing");
         if (InitializeIRCamera(ctx)) {
-            SDL_SetNumberProperty(properties, "AURORA.wii.status_flags", ctx->m_rgucReadBuffer[3] | 0x08);
+            SDL_SetNumberProperty(properties, "AURORA.wii.status_flags", status_flags | 0x08);
         } else {
             SDL_LogWarn(SDL_LOG_CATEGORY_INPUT, "HIDAPI Wii: Failed to reinitialize IR camera: %s", SDL_GetError());
         }
     }
     if (ctx->m_eExtensionControllerType != k_eWiiExtensionControllerType_WiiUPro) {
+        // Wii U has separate battery level tracking
+        UpdatePowerLevelWii(joystick, battery_level);
+    }
 ]==])
   _aurora_sdl3_replace("${_wii}" "Wii Remote IR camera (parse report 0x33)"
 [==[    // IR camera data is not supported
@@ -468,18 +507,7 @@ static void ResetButtonPacketType(SDL_DriverWii_Context *ctx)
                     ++valid_points;
                 }
             }
-            if (valid_points > 0) {
-                const float x = 1.0f - ((float)sum_x / (float)valid_points) / 1023.0f;
-                const float y = ((float)sum_y / (float)valid_points) / 767.0f;
-                const SDL_PropertiesID properties = SDL_GetJoystickProperties(joystick);
-                SDL_SetBooleanProperty(properties, "AURORA.wii.ir_valid", true);
-                SDL_SetFloatProperty(properties, "AURORA.wii.ir_x", x);
-                SDL_SetFloatProperty(properties, "AURORA.wii.ir_y", y);
-                SDL_SendJoystickTouchpad(ctx->timestamp, joystick, 0, 0, true, x, y, 1.0f);
-            } else {
-                SDL_SetBooleanProperty(SDL_GetJoystickProperties(joystick), "AURORA.wii.ir_valid", false);
-                SDL_SendJoystickTouchpad(ctx->timestamp, joystick, 0, 0, false, 0.0f, 0.0f, 0.0f);
-            }
+            PublishIRPointer(ctx, joystick, sum_x, sum_y, valid_points);
         }
         break;
 ]==])
@@ -515,18 +543,7 @@ static void ResetButtonPacketType(SDL_DriverWii_Context *ctx)
                     ++valid_points;
                 }
             }
-            if (valid_points > 0) {
-                const float x = 1.0f - ((float)sum_x / (float)valid_points) / 1023.0f;
-                const float y = ((float)sum_y / (float)valid_points) / 767.0f;
-                const SDL_PropertiesID properties = SDL_GetJoystickProperties(joystick);
-                SDL_SetBooleanProperty(properties, "AURORA.wii.ir_valid", true);
-                SDL_SetFloatProperty(properties, "AURORA.wii.ir_x", x);
-                SDL_SetFloatProperty(properties, "AURORA.wii.ir_y", y);
-                SDL_SendJoystickTouchpad(ctx->timestamp, joystick, 0, 0, true, x, y, 1.0f);
-            } else {
-                SDL_SetBooleanProperty(SDL_GetJoystickProperties(joystick), "AURORA.wii.ir_valid", false);
-                SDL_SendJoystickTouchpad(ctx->timestamp, joystick, 0, 0, false, 0.0f, 0.0f, 0.0f);
-            }
+            PublishIRPointer(ctx, joystick, sum_x, sum_y, valid_points);
         }
         GetExtensionData(&data, ctx->m_rgucReadBuffer + 16, 6);
         break;
@@ -561,6 +578,9 @@ static void ResetButtonPacketType(SDL_DriverWii_Context *ctx)
   # HIDAPI_DriverWii_UpdateDevice connect it as soon as a remote answers —
   # which is also how a remote synced to the bar mid-session is picked up,
   # since the always-present interfaces never raise a hotplug event.
+  # USB only: a Bluetooth remote whose sync register reads all failed is a
+  # real, present remote on a flaky stack, and connecting it buttons-only (as
+  # "Unknown Extension", the previous behavior) beats never surfacing it.
   _aurora_sdl3_replace("${_wii}" "Wii Remote DolphinBar empty slot (no phantom joystick)"
 [==[    if (device->vendor_id == USB_VENDOR_NINTENDO) {
         ctx->m_eExtensionControllerType = ReadExtensionControllerType(device);
@@ -574,7 +594,8 @@ static void ResetButtonPacketType(SDL_DriverWii_Context *ctx)
 
         UpdateDeviceIdentity(device);
     }
-    if (ctx->m_eExtensionControllerType == k_eWiiExtensionControllerType_Unknown) {
+    if (ctx->m_eExtensionControllerType == k_eWiiExtensionControllerType_Unknown &&
+        !device->is_bluetooth) {
         ctx->m_ulNextReconnect = SDL_GetTicks() + 1000;
         return true;
     }

@@ -505,13 +505,14 @@ void Poll() {
         g_lastScanMs = SDL_GetTicks();
         return;
     }
-    // Keep the DolphinBar detection fresh (throttled inside): plugging the bar
-    // in mid-session slows the cadence below, unplugging it restores it.
-    DolphinBar::Refresh();
     if (!RuntimeConfigFile::WiiContinuousScanEnabled(true)) {
         g_scanning = false;
         return;
     }
+    // Keep the DolphinBar detection fresh only while actually scanning (it is
+    // throttled inside): plugging the bar in mid-session slows the steady
+    // cadence below, unplugging it restores the Bluetooth one.
+    DolphinBar::Refresh();
     const uint64_t now = SDL_GetTicks();
     if (!g_scanning) {
         RT_LOG(RT_TAG_CONFIG) << "No Wii Remote connected; scanning for one (press 1+2 on the remote)"
@@ -522,9 +523,13 @@ void Poll() {
     if (now - g_lostAtMs < kScanStartDelayMs) {
         return;
     }
-    const uint64_t interval = DolphinBar::Cached().mode4             ? kDolphinBarScanIntervalMs
-                              : now - g_lostAtMs < kFastScanWindowMs ? kFastScanIntervalMs
-                                                                     : kScanIntervalMs;
+    // The fast window keeps its priority: right after a Bluetooth remote drops
+    // it is almost certainly still there, bar or no bar. Past it, a present
+    // bar stretches the steady cadence, since its own remotes come back
+    // through the slot probe and rescans only serve Bluetooth ones.
+    const uint64_t interval = now - g_lostAtMs < kFastScanWindowMs ? kFastScanIntervalMs
+                              : DolphinBar::Cached().mode4         ? kDolphinBarScanIntervalMs
+                                                                   : kScanIntervalMs;
     if (now - g_lastScanMs < interval) {
         return;
     }
