@@ -1,10 +1,12 @@
 #include "wii_remote_input.h"
 
+#include "dolphinbar_detect.h"
 #include "runtime_config.h"
 #include "runtime_log.h"
 
 #include <dolphin/pad.h>
 #include <SDL3/SDL_gamepad.h>
+#include <SDL3/SDL_hidapi.h>
 #include <SDL3/SDL_hints.h>
 #include <SDL3/SDL_log.h>
 #include <SDL3/SDL_sensor.h>
@@ -359,6 +361,53 @@ void SDLCALL LogSdlMessage(void*, int category, SDL_LogPriority priority, const 
     }
 }
 
+// Refreshes the DolphinBar detection and logs what it sees. The bar changes
+// what "scanning" means (see Poll), so its presence is worth a console.log line.
+void LogDolphinBarPresence() {
+    DolphinBar::Refresh();
+    const DolphinBar::Status bar = DolphinBar::Cached();
+    if (bar.mode4) {
+        RT_LOG(RT_TAG_CONFIG) << "Mayflash DolphinBar detected (Mode 4, " << bar.mode4Slots
+                              << " slot(s)); remotes sync to the bar, not to Windows Bluetooth" << std::endl;
+    } else if (bar.mode123) {
+        RT_LOG(RT_TAG_CONFIG) << "Mayflash DolphinBar appears to be in Mode 1-3; press its MODE button "
+                                 "until LED 4 is lit for native Wii Remote support" << std::endl;
+    }
+}
+
+// wii_hid_trace: dumps every Wii Remote HID interface SDL can see, so a
+// support report shows whether a DolphinBar's slots (or a Bluetooth remote)
+// reached the HID layer at all.
+void TraceHidDevices() {
+    SDL_hid_device_info* devices = SDL_hid_enumerate(0x057e, 0x0306);
+    int count = 0;
+    for (SDL_hid_device_info* device = devices; device != nullptr; device = device->next) {
+        ++count;
+        RT_LOG(RT_TAG_CONFIG) << "Wii HID trace: interface " << count << " path "
+                              << (device->path != nullptr ? device->path : "(null)") << std::endl;
+    }
+    RT_LOG(RT_TAG_CONFIG) << "Wii HID trace: " << count << " Wii Remote HID interface(s) present" << std::endl;
+    SDL_hid_free_enumeration(devices);
+}
+
+// wii_hid_trace: logs every change of what SDL has on each game port, giving
+// remote reports a timeline of connects, extension swaps and disconnects.
+void TracePortTransitions() {
+    static std::array<Kind, PAD_MAX_CONTROLLERS> s_lastKind{};
+    for (uint32_t port = 0; port < PAD_MAX_CONTROLLERS; ++port) {
+        const Kind kind = KindForPort(port);
+        if (kind == s_lastKind[port]) {
+            continue;
+        }
+        s_lastKind[port] = kind;
+        SDL_Gamepad* gamepad = SDL_GetGamepadFromPlayerIndex(static_cast<int>(port));
+        const char* name = gamepad != nullptr ? SDL_GetGamepadName(gamepad) : nullptr;
+        RT_LOG(RT_TAG_CONFIG) << "Wii HID trace: port " << (port + 1) << " -> " << KindLabel(kind)
+                              << (name != nullptr ? " (" : "") << (name != nullptr ? name : "")
+                              << (name != nullptr ? ")" : "") << std::endl;
+    }
+}
+
 // Second half of a rescan: re-enables the Wii driver once SDL has seen it off.
 void FinishRescan(uint64_t now) {
     if (g_driverOffSinceMs == 0 || now - g_driverOffSinceMs < kRescanDriverOffMs) {
@@ -392,11 +441,15 @@ void ConfigureSdlHints(bool enabled) {
         RT_LOG(RT_TAG_CONFIG) << "Failed to set " << SDL_HINT_JOYSTICK_HIDAPI_WII_PLAYER_LED << ": "
                               << SDL_GetError() << std::endl;
     }
-    RT_LOG(RT_TAG_CONFIG) << "Bluetooth Wii Remote support " << (enabled ? "enabled" : "disabled") << std::endl;
+    RT_LOG(RT_TAG_CONFIG) << "Wii Remote support " << (enabled ? "enabled" : "disabled") << std::endl;
     g_wiiDriverEnabled = enabled;
     if (enabled) {
         SDL_SetLogPriority(SDL_LOG_CATEGORY_INPUT, SDL_LOG_PRIORITY_DEBUG);
         SDL_SetLogOutputFunction(LogSdlMessage, nullptr);
+        LogDolphinBarPresence();
+        if (RuntimeConfigFile::WiiHidTraceEnabled()) {
+            TraceHidDevices();
+        }
     }
 }
 
@@ -430,6 +483,9 @@ void Poll() {
     if (!g_wiiDriverEnabled) {
         return;
     }
+    if (RuntimeConfigFile::WiiHidTraceEnabled()) {
+        TracePortTransitions();
+    }
     // Always complete a rescan in progress so the driver is never left disabled.
     FinishRescan(SDL_GetTicks());
     if (g_driverOffSinceMs != 0) {
@@ -442,6 +498,22 @@ void Poll() {
         g_scanning = false;
         g_scanCount = 0;
         g_lastScanMs = SDL_GetTicks();
+        return;
+    }
+    // A DolphinBar in mode 4 keeps its four slot interfaces present at all
+    // times and never raises a hotplug event, so re-enumerating cannot find
+    // anything new: the SDL-side reconnect probe already watches every open
+    // slot once a second, and toggling the driver hint would only cycle those
+    // handles. Skip the rescan machinery while the bar is around (detection
+    // stays fresh, so unplugging the bar brings Bluetooth scanning back).
+    DolphinBar::Refresh();
+    if (DolphinBar::Cached().mode4) {
+        if (g_scanning) {
+            RT_LOG(RT_TAG_CONFIG)
+                << "DolphinBar Mode 4 present; its slots are probed continuously, rescan not needed"
+                << std::endl;
+        }
+        g_scanning = false;
         return;
     }
     if (!RuntimeConfigFile::WiiContinuousScanEnabled(true)) {

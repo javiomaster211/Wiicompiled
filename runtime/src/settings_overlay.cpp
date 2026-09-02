@@ -1,7 +1,9 @@
 #include "settings_overlay.h"
 #include "audio_backend.h"
 #include "controller_mapping_wizard.h"
+#include "dolphinbar_detect.h"
 #include "game_graphics_options.h"
+#include "ir_pointer.h"
 #include "music_attenuation.h"
 #include "runtime_config.h"
 #include "runtime_log.h"
@@ -322,6 +324,35 @@ void ApplyConfiguredMappings() {
 
 bool g_wiiRemotesEnabled = RuntimeConfigFile::WiiRemotesEnabled(true);
 bool g_wiiContinuousScan = RuntimeConfigFile::WiiContinuousScanEnabled(true);
+float g_wiiIrScale = RuntimeConfigFile::WiiIrScale();
+float g_wiiIrOffsetY = RuntimeConfigFile::WiiIrOffsetY();
+
+// Pointer status and mapping for a remote whose IR camera sees a sensor bar.
+void DrawWiiRemotePointer(uint32_t port) {
+    ImGui::SeparatorText("Pointer");
+    float rawX = 0.0f;
+    float rawY = 0.0f;
+    if (IrPointer::CameraDebug(port, rawX, rawY)) {
+        ImGui::Text("IR camera: tracking (raw %.3f  %.3f)", rawX, rawY);
+    } else if (port == 0) {
+        ImGui::TextDisabled("IR camera: no sensor bar visible - the mouse moves the pointer.");
+    } else {
+        ImGui::TextDisabled("IR camera: no sensor bar visible.");
+    }
+    bool changed = ImGui::SliderFloat("IR scale", &g_wiiIrScale, 0.2f, 3.0f, "%.2f");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("How far the pointer travels for a given wrist movement.\n"
+                          "Raise it if you cannot reach the screen edges, lower it if the pointer overshoots.");
+    }
+    changed = ImGui::SliderFloat("IR vertical offset", &g_wiiIrOffsetY, -1.0f, 1.0f, "%.2f") || changed;
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Shifts the pointer up or down to compensate for a sensor bar\n"
+                          "mounted above (positive) or below (negative) the screen.");
+    }
+    if (changed) {
+        RuntimeConfigFile::SetWiiIrMapping(g_wiiIrScale, g_wiiIrOffsetY);
+    }
+}
 
 // Accelerometer readout and zero-point calibration for a bare remote / remote + Nunchuk.
 void DrawWiiRemoteAccelerometer(uint32_t port) {
@@ -362,28 +393,54 @@ void DrawWiiRemoteAccelerometer(uint32_t port) {
     }
 }
 
-// Wii Remotes (Bluetooth) menu: driver switch, pairing help, continuous scanning and the port's controller kind.
+// Wii Remotes menu: driver switch, pairing help, DolphinBar status, continuous
+// scanning and the port's controller kind.
 void DrawWiiRemoteSettings(uint32_t selectedGamePort) {
-    if (!ImGui::BeginMenu("Wii Remotes (Bluetooth)")) {
+    if (!ImGui::BeginMenu("Wii Remotes")) {
         return;
     }
+    // Keep the DolphinBar readout live while the menu is open (throttled inside).
+    DolphinBar::Refresh();
+    const DolphinBar::Status bar = DolphinBar::Cached();
     if (ImGui::Checkbox("Use Wii Remotes / Wii U Pro Controllers", &g_wiiRemotesEnabled)) {
         RuntimeConfigFile::SetWiiRemotesEnabled(g_wiiRemotesEnabled);
     }
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Takes effect on the next launch. Turn this off if you use a Mayflash DolphinBar.");
+        ImGui::SetTooltip("Takes effect on the next launch. Works with remotes paired over Bluetooth\n"
+                          "and with a Mayflash DolphinBar in Mode 4.");
     }
-    ImGui::TextDisabled("Pairing: Windows Settings > Bluetooth > Add device, then press 1+2");
-    ImGui::TextDisabled("(or the red SYNC button) on the remote. Leave the PIN empty.");
-    ImGui::TextDisabled("A remote that was paired before also needs to be turned on with 1+2/SYNC.");
+    if (bar.mode4) {
+        ImGui::Text("Mayflash DolphinBar detected (Mode 4).");
+        ImGui::TextDisabled("Pairing: press SYNC on the bar, then the red SYNC button (or 1+2) on the remote.");
+        ImGui::TextDisabled("A remote synced to the bar before just needs any button press to wake up.");
+    } else {
+        if (bar.mode123) {
+            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f),
+                               "A Mayflash DolphinBar appears to be in Mode 1-3.");
+            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f),
+                               "Press its MODE button until LED 4 is lit for native Wii Remote support.");
+        }
+        ImGui::TextDisabled("Pairing: Windows Settings > Bluetooth > Add device, then press 1+2");
+        ImGui::TextDisabled("(or the red SYNC button) on the remote. Leave the PIN empty.");
+        ImGui::TextDisabled("A remote that was paired before also needs to be turned on with 1+2/SYNC.");
+    }
+    // With a DolphinBar in Mode 4 the rescan machinery is bypassed: its slots
+    // never unplug, and the driver probes them continuously (see Poll()).
+    ImGui::BeginDisabled(bar.mode4);
     if (ImGui::Checkbox("Keep scanning for Wii Remotes (like Dolphin's Continuous Scanning)",
                         &g_wiiContinuousScan)) {
         RuntimeConfigFile::SetWiiContinuousScanEnabled(g_wiiContinuousScan);
     }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("While no Wii controller is connected, re-check Bluetooth every 2 seconds so a\n"
-                          "remote that dropped out (\"Communications with the controller have been\n"
-                          "interrupted\") or was turned on after launch comes back by itself.");
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        if (bar.mode4) {
+            ImGui::SetTooltip("Not needed with a DolphinBar: its four slots are probed continuously,\n"
+                              "so a remote synced to the bar shows up by itself.");
+        } else {
+            ImGui::SetTooltip("While no Wii controller is connected, re-check Bluetooth every 2 seconds so a\n"
+                              "remote that dropped out (\"Communications with the controller have been\n"
+                              "interrupted\") or was turned on after launch comes back by itself.");
+        }
     }
     // The driver hint is only read at launch, so a rescan after the user turned
     // the setting off would still re-enumerate Wii devices in this session.
@@ -392,6 +449,10 @@ void DrawWiiRemoteSettings(uint32_t selectedGamePort) {
         WiiRemoteInput::RescanNow();
     }
     ImGui::EndDisabled();
+    if (ImGui::IsItemHovered() && bar.mode4) {
+        ImGui::SetTooltip("Usually unnecessary with a DolphinBar, and it briefly disconnects\n"
+                          "every connected Wii controller while SDL re-opens their handles.");
+    }
     ImGui::SameLine();
     if (WiiRemoteInput::IsScanning()) {
         ImGui::TextDisabled("Scanning... (%u so far) - press 1+2 on the remote", WiiRemoteInput::ScanCount());
@@ -449,6 +510,7 @@ void DrawWiiRemoteSettings(uint32_t selectedGamePort) {
     if (kind == WiiRemoteInput::Kind::Remote || kind == WiiRemoteInput::Kind::RemoteWithNunchuk ||
         kind == WiiRemoteInput::Kind::RemoteWithClassic) {
         DrawWiiRemoteAccelerometer(selectedGamePort);
+        DrawWiiRemotePointer(selectedGamePort);
     }
 
     ImGui::EndMenu();
@@ -1044,6 +1106,8 @@ void Draw() noexcept {
     // its "communications interrupted" prompt without polling pads). Same guest
     // thread as PADRead, so no concurrent access to the scanner's state.
     WiiRemoteInput::Poll();
+    // Same thread as ImGui's input state; KPADRead consumes this on the guest thread.
+    IrPointer::PublishFromImGui();
     ApplyConfiguredMappings();
     PersistDisplayModeIfChanged();
     UpdateCursorAutoHide();

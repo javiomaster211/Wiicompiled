@@ -76,15 +76,23 @@ then says "Using fallback accelerometer calibration") and it falls back to a nom
 so the same menu has a one-button calibration (remote flat, buttons up) that removes the small
 tilt offset some remotes show.
 
+A Mayflash DolphinBar is supported natively in its **Mode 4** (press the bar's MODE button until
+LED 4 is lit): the bar re-exposes each remote it syncs exactly like a Bluetooth-paired one, so
+extensions, hot-swapping and all of the above work the same, and remotes synced to the bar after
+launch are picked up automatically. The bar's other modes emulate a mouse or a generic gamepad
+instead; the Wii Remotes menu shows a warning when it sees the bar in one of those.
+
+The IR pointer has two sources. When the remote's IR camera sees a powered sensor bar (a
+DolphinBar in any mode doubles as one), pointing at the screen moves the game's hand cursor,
+with scale and vertical offset tunable in F10 > Controller settings > Wii Remotes. Without a
+bar, the cursor follows the mouse over the window; moving the mouse out of the window reads
+as pointing away from the screen, and the D-pad still navigates as before.
+
 Known limitations of the Wii Remote path:
-- No IR pointer yet: menus are navigated with the D-pad and A (the game treats the remote as
-  pointing away from the screen).
 - Battery level is not reported to the game and the remote's speaker is not implemented.
 - Only the Wii Remote's own accelerometer is calibrated; the Nunchuk's uses SDL's fixed zero point.
 - The Classic Controller's L/R triggers reach the game as digital (full pull on click): SDL does not
   expose their analog travel.
-- Turn the Wii Remote support off in that menu if you use a Mayflash DolphinBar, which already
-  presents the remote as a regular gamepad.
 
 ## Requirements
 

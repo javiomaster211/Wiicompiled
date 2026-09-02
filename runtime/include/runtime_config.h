@@ -73,6 +73,16 @@ struct RuntimeUserConfig {
     // Debugging aid: append every KPAD sample of the Bluetooth remote (raw and
     // corrected accelerometer, buttons) to wii_accel_trace.csv next to Config.toml.
     std::optional<bool> wiiAccelTrace;
+    // Debugging aid: log the Wii HID device enumeration (device paths, DolphinBar
+    // detection) and per-port controller transitions to console.log.
+    std::optional<bool> wiiHidTrace;
+    // IR pointer mapping for a remote whose camera sees a sensor bar (a Mayflash
+    // DolphinBar or any powered bar): how far the pointer travels per camera unit
+    // (1.0 maps the camera's view onto the screen edge to edge) and a vertical
+    // shift in KPAD units to compensate for the bar sitting above or below the
+    // screen.
+    std::optional<double> wiiIrScale;
+    std::optional<double> wiiIrOffsetY;
     std::optional<bool> networkEnabled;
     std::optional<bool> discordPresenceEnabled;
     // The application ID of the WiiCompiled Discord application. This is only
@@ -467,6 +477,9 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     config.wiiAccelOffsetY = FindConfigValue<double>(document, "controller", "wii_accel_offset_y");
     config.wiiAccelOffsetZ = FindConfigValue<double>(document, "controller", "wii_accel_offset_z");
     config.wiiAccelTrace = FindConfigValue<bool>(document, "controller", "wii_accel_trace");
+    config.wiiHidTrace = FindConfigValue<bool>(document, "controller", "wii_hid_trace");
+    config.wiiIrScale = FindConfigValue<double>(document, "controller", "wii_ir_scale");
+    config.wiiIrOffsetY = FindConfigValue<double>(document, "controller", "wii_ir_offset_y");
     config.networkEnabled = FindConfigValue<bool>(document, "network", "enabled");
     config.discordPresenceEnabled = FindConfigValue<bool>(document, "discord", "enabled");
     config.discordClientId = FindConfigValue<std::string>(document, "discord", "client_id");
@@ -825,6 +838,38 @@ inline std::array<double, 3> WiiAccelOffset() {
 // Whether to write the per-frame accelerometer trace (off unless asked for).
 inline bool WiiAccelTraceEnabled(bool fallback = false) {
     return Get().wiiAccelTrace.value_or(fallback);
+}
+
+// Whether to log Wii HID enumeration and controller transitions (off unless
+// asked for; the knob support asks users to turn on for DolphinBar reports).
+inline bool WiiHidTraceEnabled(bool fallback = false) {
+    return Get().wiiHidTrace.value_or(fallback);
+}
+
+// IR pointer travel per camera unit; 1.0 spans the screen edge to edge.
+inline float WiiIrScale(float fallback = 1.0f) {
+    return static_cast<float>(Get().wiiIrScale.value_or(fallback));
+}
+
+// IR pointer vertical shift in KPAD units (positive moves the pointer down),
+// compensating for a sensor bar mounted above or below the screen.
+inline float WiiIrOffsetY(float fallback = 0.0f) {
+    return static_cast<float>(Get().wiiIrOffsetY.value_or(fallback));
+}
+
+// Persists the IR pointer mapping tuned in the overlay.
+inline bool SetWiiIrMapping(float scale, float offsetY) {
+    Mutable().wiiIrScale = scale;
+    Mutable().wiiIrOffsetY = offsetY;
+    bool ok = true;
+    const std::pair<const char*, float> keys[2] = {{"wii_ir_scale", scale}, {"wii_ir_offset_y", offsetY}};
+    for (const auto& [key, value] : keys) {
+        // Always a float literal, so a whole-number value does not come back as a TOML integer.
+        std::ostringstream formatted;
+        formatted << std::fixed << std::setprecision(4) << value;
+        ok = WriteSetting("controller", key, formatted.str()) && ok;
+    }
+    return ok;
 }
 
 // True while a non-zero correction is stored ("Clear calibration" writes zeros).
